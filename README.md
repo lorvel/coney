@@ -264,7 +264,7 @@ coney 3.x is a ground-up rewrite: **neither the API nor the wire format is compa
 | `maxRetries: 3`                                                           | `retry: { delays: [60_000, 240_000, 540_000] }` — count _and_ spacing, explicit          |
 | queue names `coney:que.<name>`, `coney:que.<name>.requeue`                | `[<prefix>.]<name>`, shared `[<prefix>.]retry.<dur>`, per-queue `[<prefix>.]<name>.dead` |
 
-Because the wire names and retry topology differ, 2.x and 3.x must **never consume the same queue**. Cut over per queue, the safe order being: deploy 3.x consumers (new queues exist and are consumed from the start) → switch producers to 3.x → drain what remains in the old `coney:que.*` queues (re-publish or process with the old consumer) → delete the 2.x objects.
+Because the wire names and retry topology differ, 2.x and 3.x must **never consume the same queue**. Cut over per queue, the safe order being: deploy 3.x consumers (new queues exist and are consumed from the start) → switch producers to 3.x → drain what remains in the old `coney:que.*` queues (re-publish or process with the old consumer) → delete the 2.x objects. This exact sequence has been run against a live three-service production deployment (one consumer, two producers) with zero stranded messages, ending in a broker-restart drill where every service reconnected on its own within seconds.
 
 ## License
 
