@@ -1,6 +1,6 @@
 # coney
 
-> **Status: in development (0.x, unpublished).** The v0.1 design is locked — see [docs/design.md](docs/design.md) — and the connection core (client, reconnection, topology, confirmed publishing) is implemented and tested. Consuming, subscriptions and the test double land next; until then those methods throw. The full API surface is real today: [docs/api/coney.d.ts](docs/api/coney.d.ts) — CI keeps the built declarations identical to it.
+> **Status: in development (0.x, unpublished).** The v0.1 design is locked — see [docs/design.md](docs/design.md) — and the whole surface is implemented: connection core, consuming with the broker-held retry ladder, topic pub/sub, dead-letter ops and the in-memory test double, verified by a unit suite and a broker-backed integration suite. The contract is [docs/api/coney.d.ts](docs/api/coney.d.ts) — CI keeps the built declarations identical to it. Publishing to npm arrives with the release slice.
 
 An opinionated RabbitMQ toolkit for Node.js.
 
@@ -38,6 +38,56 @@ await mq.queue(EmbedKu).consume(
   { prefetch: 4 },
 )
 await mq.queue(EmbedKu).publish({ kuId }) // resolves on broker confirm
+```
+
+## Topics
+
+```ts
+import { defineTopic } from '@lorvel/coney'
+
+const Events = defineTopic({ name: 'events', schema: DomainEvent })
+
+// Per-instance listener: exclusive server-named queue, acked after the handler,
+// a throw is dropped (logged) — resets on reconnect, missed messages are lost.
+const sub = await mq.topic(Events).subscribe(['task.*', 'ku.*'], async (msg) => refresh(msg.body))
+await sub.cancel() // survives reconnects until cancelled
+
+// Durable subscriber: a queue def WITH bindings — competing consumers and the
+// full retry/dead machinery for topic traffic.
+const Notify = defineQueue({
+  name: 'events.notify',
+  schema: DomainEvent,
+  retry: { delays: [10_000, 60_000] },
+  bindings: [{ topic: Events, patterns: ['task.*'] }],
+})
+
+await mq.topic(Events).publish('task.updated', event) // no matching binding → confirmed and dropped
+```
+
+## Dead-letter ops
+
+```ts
+const jobs = mq.queue(EmbedKu)
+await jobs.inspect() // { ready, consumers, dead }
+await jobs.replayDead({ limit: 100 }) // dead → main queue; attempt reset, messageId kept
+await jobs.purgeDead()
+await mq.inspectRetry() // depth of every shared retry bucket, keyed by duration label
+```
+
+## Testing your services
+
+`createConeyMock()` implements the same `Coney` interface in memory: `publish`
+records into `mock.published`, and `deliver` / `deliverTopic` run the REAL
+consumer pipeline (schema gate, ladder arithmetic, `timeoutMs`), returning the
+outcome (`ack` / `retry` / `dead` / `dropped`):
+
+```ts
+import { createConeyMock } from '@lorvel/coney'
+
+const mock = createConeyMock({ prefix: 'lorvel' })
+await mock.queue(EmbedKu).consume(handler)
+const outcome = await mock.deliver(EmbedKu, { kuId }, { attempt: 2 })
+// e.g. { outcome: 'retry', attempt: 2, delayMs: 60_000, error } — straight from the ladder
 ```
 
 ## Migrating from 2.x

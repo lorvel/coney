@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { createConey } from '../src/client.js'
 import { defineQueue, defineTopic } from '../src/define.js'
 import { ConeyClosedError, ConeyConfigError, ConeySchemaError } from '../src/errors.js'
-import { createConeyMock } from '../src/mock.js'
 
 const URL_OK = 'amqp://user:pw@localhost:5672/vhost'
 /** No I/O in this file: every client stays `idle` (or is closed while idle). */
@@ -85,16 +84,29 @@ describe('handles', () => {
     assert.throws(() => mq.topic(defineTopic({ name: 'clash' })), ConeyConfigError)
   })
 
-  it('the slice-B surface exists but throws "not implemented"', () => {
+  it('consume/subscribe/ops validate their arguments without any I/O', async () => {
     const mq = makeClient()
     const queue = mq.queue(defineQueue({ name: 'jobs' }))
     const topic = mq.topic(defineTopic({ name: 'events' }))
-    assert.throws(() => queue.consume(() => {}), /not implemented/)
-    assert.throws(() => queue.inspect(), /not implemented/)
-    assert.throws(() => queue.replayDead(), /not implemented/)
-    assert.throws(() => queue.purgeDead(), /not implemented/)
-    assert.throws(() => topic.subscribe(['a.*'], () => {}), /not implemented/)
-    assert.throws(() => createConeyMock(), /not implemented/)
+    await assert.rejects(queue.consume('nope' as never), ConeyConfigError)
+    await assert.rejects(queue.consume(() => {}, { prefetch: 0 }), ConeyConfigError)
+    await assert.rejects(queue.consume(() => {}, { timeoutMs: -1 }), ConeyConfigError)
+    await assert.rejects(topic.subscribe([], () => {}), ConeyConfigError)
+    await assert.rejects(topic.subscribe([''], () => {}), ConeyConfigError)
+    await assert.rejects(queue.replayDead({ limit: -1 }), ConeyConfigError)
+    assert.equal(mq.state, 'idle') // nothing above may start the connection
+  })
+
+  it('consume/subscribe/ops after close reject with ConeyClosedError', async () => {
+    const mq = makeClient()
+    const queue = mq.queue(defineQueue({ name: 'jobs' }))
+    const topic = mq.topic(defineTopic({ name: 'events' }))
+    await mq.close()
+    await assert.rejects(queue.consume(() => {}), ConeyClosedError)
+    await assert.rejects(topic.subscribe(['a.*'], () => {}), ConeyClosedError)
+    await assert.rejects(queue.inspect(), ConeyClosedError)
+    await assert.rejects(queue.replayDead(), ConeyClosedError)
+    await assert.rejects(queue.purgeDead(), ConeyClosedError)
   })
 })
 

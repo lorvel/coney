@@ -3,17 +3,26 @@
  * orchestration of connection, topology and publisher (spec §1, §4).
  */
 
-import { ConeyClosedError, ConeyConfigError, ConeySchemaError } from './errors.js'
+import type { Channel } from 'amqplib'
+import { ConeyClosedError, ConeyConfigError, ConeySchemaError, ConeyTopologyError, ConeyUnavailableError, ConeyError } from './errors.js'
 import type { AnyDef, QueueDef, TopicDef } from './define.js'
 import { validateName, validateRetryPolicy, wireName } from './define.js'
-import type { RetryPolicy } from './retry.js'
+import { DEFAULT_RETRY, bucketLogicalName, effectiveDelays, type RetryPolicy } from './retry.js'
 import { ConnectionManager, DEFAULT_RECONNECT_POLICY, type ReconnectPolicy } from './connection.js'
 import { TopologyManager } from './topology.js'
 import { Publisher } from './publisher.js'
 import { encodeMessage, type PublishOptions } from './codec.js'
 import { makeEmitter, redactText, type ConeyLogEvent, type LogEmitter } from './log.js'
-import { notImplemented, type ConsumeOptions, type Handler } from './consumer.js'
-import type { SubscribeOptions, Subscription } from './subscription.js'
+import {
+  QueueConsumer,
+  republishOptions,
+  validateConsumeOptions,
+  type BaseConsumer,
+  type ChannelFactory,
+  type ConsumeOptions,
+  type Handler,
+} from './consumer.js'
+import { TopicSubscription, type SubscribeOptions, type Subscription } from './subscription.js'
 
 /** Lifecycle of a {@link Coney} client. */
 export type ConeyState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closing' | 'closed'
@@ -160,9 +169,9 @@ interface PublishArgs<T> {
   options: PublishOptions | undefined
 }
 
-const DEFAULT_RETRY: RetryPolicy = Object.freeze({ delays: Object.freeze([10_000, 60_000, 300_000]) as readonly number[] })
 const DEFAULT_PUBLISH_TIMEOUT_MS = 5000
 const DEFAULT_DRAIN_MS = 10_000
+
 
 function validateReconnectPolicy(policy: ReconnectPolicy): void {
   const isNonNegative = (value: number): boolean => typeof value === 'number' && !Number.isNaN(value) && value >= 0
@@ -232,10 +241,14 @@ class ConeyClient implements Coney {
   private readonly publishTimeoutMs: number
   private readonly queueHandles = new Map<string, QueueHandle<never>>()
   private readonly topicHandles = new Map<string, TopicHandle<never>>()
+  private readonly defaultRetry: RetryPolicy
   private phaseOverride: 'closing' | 'closed' | null = null
   private closePromise: Promise<CloseResult> | null = null
   /** Every accepted publish, from pipeline entry to confirm — close() waits for these. */
   private readonly activePublishes = new Set<Promise<void>>()
+  /** Every live consumer/subscription runtime; re-attached on each `setup`. */
+  private readonly consumers = new Set<BaseConsumer>()
+  private tagCounter = 0
 
   constructor(options: ConeyOptions, reconnect: ReconnectPolicy, defaultRetry: RetryPolicy) {
     this.prefix = options.prefix
@@ -256,9 +269,29 @@ class ConeyClient implements Coney {
       emit: this.emit,
     })
     this.publisher = new Publisher(this.manager)
+    this.defaultRetry = defaultRetry
     this.manager.onSetup = async (model) => {
       await this.topology.replayAll(model)
       await this.publisher.onSetup(model)
+      // Channels must come from the raw model here: the manager's factory waits
+      // for `open`, which only happens AFTER this setup returns.
+      const factory: ChannelFactory = {
+        createChannel: async () => {
+          const channel = await model.createChannel()
+          this.manager.registerChannel(channel)
+          return channel
+        },
+        createConfirmChannel: async () => {
+          const channel = await model.createConfirmChannel()
+          this.manager.registerChannel(channel)
+          return channel
+        },
+      }
+      for (const runtime of [...this.consumers]) {
+        // One consumer failing to attach (its topology failed this round — already
+        // logged by the replay) must not block the others or reject `setup`.
+        await runtime.attach(factory).catch(() => {})
+      }
     }
     this.manager.onDisconnect = (err) => {
       this.publisher.rejectPending(err)
@@ -329,10 +362,10 @@ class ConeyClient implements Coney {
       name: wire,
       publish: (body, options) =>
         this.publishTo({ def, target: wire, exchange: '', routingKey: wire, typeProp: def.name, body, options }),
-      consume: () => notImplemented('QueueHandle.consume'),
-      inspect: () => notImplemented('QueueHandle.inspect'),
-      replayDead: () => notImplemented('QueueHandle.replayDead'),
-      purgeDead: () => notImplemented('QueueHandle.purgeDead'),
+      consume: (handler, options) => this.startQueueConsumer(def, wire, handler, options),
+      inspect: () => this.inspectQueue(wire),
+      replayDead: (options) => this.replayDeadQueue(def, wire, options),
+      purgeDead: () => this.purgeDeadQueue(wire),
     }
   }
 
@@ -346,7 +379,7 @@ class ConeyClient implements Coney {
         }
         return this.publishTo({ def, target: wire, exchange: wire, routingKey, typeProp: routingKey, body, options })
       },
-      subscribe: () => notImplemented('TopicHandle.subscribe'),
+      subscribe: (patterns, handler, options) => this.startSubscription(def, wire, patterns, handler, options),
     }
   }
 
@@ -397,20 +430,224 @@ class ConeyClient implements Coney {
     }
   }
 
+  /** Spec §4 order: reject new publishes → cancel consumers → drain → confirms → close. */
   private async doClose(drainMs: number): Promise<CloseResult> {
     this.phaseOverride = 'closing'
-    // Slice A has no consumers: nothing to cancel, no in-flight handlers to drain.
-    // The consuming slice extends this sequence between `closing` and the confirm wait.
-    this.emit({ event: 'coney.closing', level: 'info', drainMs, inFlight: 0 })
+    const runtimes = [...this.consumers]
+    const inFlightAtStart = runtimes.reduce((sum, runtime) => sum + runtime.inFlightCount(), 0)
+    this.emit({ event: 'coney.closing', level: 'info', drainMs, inFlight: inFlightAtStart })
+    await Promise.all(runtimes.map((runtime) => runtime.stopDelivery()))
+    const deadline = Date.now() + drainMs
+    const drainResults = await Promise.all(runtimes.map((runtime) => runtime.waitInFlight(deadline)))
+    const drained = drainResults.every(Boolean)
+    let inFlight = 0
+    if (!drained) {
+      // Abort the stragglers' signals; their messages stay unacked and the broker
+      // redelivers them (never a loss).
+      for (const runtime of runtimes) runtime.abortInFlight()
+      inFlight = runtimes.reduce((sum, runtime) => sum + runtime.inFlightCount(), 0)
+    }
     // Accepted publishes finish (or fail on their own bounded timeouts) before the
     // connection goes away — the "fire N publishes, then close()" pattern loses no tail.
     while (this.activePublishes.size > 0) {
       await Promise.allSettled([...this.activePublishes])
     }
     await this.publisher.settleAll()
+    // The channel-close RPC flushes the final acks — a bare connection close
+    // would drop the fire-and-forget frames still in amqplib's write buffer.
+    await Promise.all(runtimes.map((runtime) => runtime.releaseChannel()))
+    for (const runtime of runtimes) runtime.markClosed()
     await this.manager.closeConnection()
     this.phaseOverride = 'closed'
-    this.emit({ event: 'coney.closed', level: 'info', drained: true, inFlight: 0 })
-    return Object.freeze({ drained: true, inFlight: 0 })
+    this.emit({ event: 'coney.closed', level: 'info', drained, inFlight })
+    return Object.freeze({ drained, inFlight })
+  }
+
+  private ensureNotClosed(): void {
+    if (this.phaseOverride !== null) throw new ConeyClosedError('the client is closing or closed')
+  }
+
+  private nextConsumerTag(logical: string): string {
+    this.tagCounter += 1
+    return `${this.appId ?? 'coney'}.${logical}.${this.tagCounter}`
+  }
+
+  private async startQueueConsumer<T>(
+    def: QueueDef<T>,
+    wire: string,
+    handler: Handler<T>,
+    options: ConsumeOptions | undefined,
+  ): Promise<Subscription> {
+    this.ensureNotClosed()
+    if (typeof handler !== 'function') throw new ConeyConfigError('consume() needs a handler function')
+    validateConsumeOptions(options)
+    const runtime = new QueueConsumer<T>({
+      def,
+      wire,
+      handler,
+      options,
+      delays: effectiveDelays(def.retry, this.defaultRetry),
+      bucketWire: (delayMs) => wireName(this.prefix, bucketLogicalName(delayMs)),
+      consumerTag: this.nextConsumerTag(def.name),
+      emit: this.emit,
+      onDispose: (disposed) => this.consumers.delete(disposed),
+    })
+    return this.startRuntime(runtime, def)
+  }
+
+  private async startSubscription<T>(
+    def: TopicDef<T>,
+    wire: string,
+    patterns: readonly string[],
+    handler: Handler<T>,
+    options: SubscribeOptions | undefined,
+  ): Promise<Subscription> {
+    this.ensureNotClosed()
+    if (typeof handler !== 'function') throw new ConeyConfigError('subscribe() needs a handler function')
+    if (!Array.isArray(patterns) || patterns.length === 0) {
+      throw new ConeyConfigError('subscribe() needs at least one binding pattern')
+    }
+    for (const pattern of patterns) {
+      if (typeof pattern !== 'string' || pattern.length === 0) {
+        throw new ConeyConfigError('binding patterns must be non-empty strings')
+      }
+    }
+    validateConsumeOptions(options)
+    const runtime = new TopicSubscription<T>({
+      def,
+      topicWire: wire,
+      patterns: [...patterns],
+      handler,
+      options,
+      consumerTag: this.nextConsumerTag(def.name),
+      emit: this.emit,
+      onDispose: (disposed) => this.consumers.delete(disposed),
+    })
+    return this.startRuntime(runtime, def)
+  }
+
+  /** Register, wait for a connection, assert the def, attach — or roll back cleanly. */
+  private async startRuntime(runtime: BaseConsumer, def: AnyDef): Promise<Subscription> {
+    this.consumers.add(runtime)
+    try {
+      await this.manager.waitForOpen()
+      await this.topology.ensure(def)
+      // `setup` may have attached it already (a reconnect finished in between) —
+      // attach() is a no-op while the runtime holds a live channel.
+      await runtime.attach(this.manager)
+      return runtime.subscriptionFacade()
+    } catch (err) {
+      this.consumers.delete(runtime)
+      runtime.markClosed()
+      throw err
+    }
+  }
+
+  private async inspectQueue(wire: string): Promise<QueueStats> {
+    this.ensureNotClosed()
+    await this.manager.waitForOpen()
+    const channel = await this.manager.createChannel()
+    try {
+      const main = await this.checkQueue(channel, wire)
+      const dead = await this.checkQueue(channel, `${wire}.dead`)
+      return Object.freeze({ ready: main.messageCount, consumers: main.consumerCount, dead: dead.messageCount })
+    } finally {
+      await channel.close().catch(() => {})
+    }
+  }
+
+  private async checkQueue(channel: Channel, name: string): Promise<{ messageCount: number; consumerCount: number }> {
+    try {
+      return await channel.checkQueue(name)
+    } catch (err) {
+      const amqpCode = (err as { code?: unknown }).code
+      throw new ConeyTopologyError(
+        `could not inspect "${name}": ${redactText(err instanceof Error ? err.message : String(err))}`,
+        { target: name, ...(typeof amqpCode === 'number' ? { amqpCode } : {}), cause: err },
+      )
+    }
+  }
+
+  private async replayDeadQueue(
+    def: QueueDef<unknown>,
+    wire: string,
+    options?: { readonly limit?: number },
+  ): Promise<{ readonly replayed: number }> {
+    this.ensureNotClosed()
+    if (options?.limit !== undefined && (!Number.isInteger(options.limit) || options.limit < 0)) {
+      throw new ConeyConfigError('limit must be an integer >= 0')
+    }
+    await this.manager.waitForOpen()
+    // The main queue must exist — a publish to a missing queue is dropped silently,
+    // which would LOSE dead messages instead of replaying them.
+    await this.topology.ensure(def)
+    const deadWire = `${wire}.dead`
+    const channel = await this.manager.createConfirmChannel()
+    let replayed = 0
+    try {
+      // Snapshot: replay what is present at call time, not what keeps arriving.
+      const snapshot = (await this.checkQueue(channel, deadWire)).messageCount
+      const target = Math.min(options?.limit ?? snapshot, snapshot)
+      while (replayed < target) {
+        const raw = await channel.get(deadWire, { noAck: false })
+        if (raw === false) break
+        const headers: Record<string, unknown> = { ...(raw.properties.headers ?? {}) }
+        for (const key of Object.keys(headers)) {
+          if (
+            key === 'x-retries' ||
+            key === 'x-retry-at' ||
+            key === 'x-reason' ||
+            key === 'x-failed-at' ||
+            key.startsWith('x-death') ||
+            key.startsWith('x-first-death') ||
+            key.startsWith('x-last-death')
+          ) {
+            delete headers[key]
+          }
+        }
+        const previous = headers['x-replayed']
+        headers['x-replayed'] = (typeof previous === 'number' && Number.isInteger(previous) && previous >= 0 ? previous : 0) + 1
+        await new Promise<void>((resolve, reject) => {
+          channel.publish('', wire, raw.content, republishOptions(raw.properties, headers), (err) => {
+            if (err == null) resolve()
+            else reject(err instanceof Error ? err : new Error(String(err)))
+          })
+        })
+        channel.ack(raw)
+        replayed += 1
+      }
+      return Object.freeze({ replayed })
+    } catch (err) {
+      // Interrupted mid-loop: unacked messages return to the dead queue on channel
+      // close — the completed part stays replayed (at-least-once, never a loss).
+      if (err instanceof ConeyError) throw err
+      throw new ConeyUnavailableError(
+        `replayDead("${def.name}") was interrupted after ${replayed} messages`,
+        { cause: err },
+      )
+    } finally {
+      this.emit({ event: 'coney.dead_replayed', level: 'info', queue: wire, replayed })
+      await channel.close().catch(() => {})
+    }
+  }
+
+  private async purgeDeadQueue(wire: string): Promise<{ readonly purged: number }> {
+    this.ensureNotClosed()
+    await this.manager.waitForOpen()
+    const deadWire = `${wire}.dead`
+    const channel = await this.manager.createChannel()
+    try {
+      const reply = await channel.purgeQueue(deadWire)
+      return Object.freeze({ purged: reply.messageCount })
+    } catch (err) {
+      if (err instanceof ConeyError) throw err
+      const amqpCode = (err as { code?: unknown }).code
+      throw new ConeyTopologyError(
+        `could not purge "${deadWire}": ${redactText(err instanceof Error ? err.message : String(err))}`,
+        { target: deadWire, ...(typeof amqpCode === 'number' ? { amqpCode } : {}), cause: err },
+      )
+    } finally {
+      await channel.close().catch(() => {})
+    }
   }
 }

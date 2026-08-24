@@ -80,11 +80,12 @@ export class ConnectionManager {
   private readonly policy: ReconnectPolicy
   private readonly emit: LogEmitter
 
-  private connectPromise: Promise<RecoveringChannelModel> | null = null
+  private started = false
   private recovering: RecoveringChannelModel | null = null
   private closeRequested = false
   private disconnectedAt = 0
   private openWaiters: OpenWaiter[] = []
+  private cancelBackoff: (() => void) | null = null
 
   constructor(args: {
     url: string
@@ -106,16 +107,48 @@ export class ConnectionManager {
   }
 
   /**
-   * Kick off the connect loop (idempotent, non-blocking). amqplib only hands the
-   * recovering model back after the first successful connection, so attempts before
-   * that cannot be observed per attempt — a single `coney.connecting` is logged
-   * until `coney.connected` (see docs/design.md §4).
+   * Kick off the connect loop (idempotent, non-blocking).
+   *
+   * Two phases (docs/design.md §4): amqplib's promise API only hands the
+   * recovering model back after the FIRST successful connection, so its own
+   * initial retry loop cannot be stopped from outside — a `close()` during a
+   * boot-time outage would leak it forever. Phase 1 is therefore coney's own
+   * cancellable probe loop (plain connects under the same policy); phase 2 hands
+   * over to the recovery connect the moment a probe succeeded.
    */
   start(): void {
-    if (this.connectPromise !== null || this.closeRequested) return
+    if (this.started || this.closeRequested) return
+    this.started = true
     this.phaseValue = 'connecting'
-    this.emit({ event: 'coney.connecting', level: 'info', attempt: 1, url: this.redactedUrl })
+    void this.runInitialConnect()
+  }
+
+  private async runInitialConnect(): Promise<void> {
     const userClientProperties = (this.socketOptions?.['clientProperties'] ?? {}) as Record<string, unknown>
+    let attempt = 0
+    for (;;) {
+      if (this.closeRequested) return
+      attempt += 1
+      this.emit({ event: 'coney.connecting', level: 'info', attempt, url: this.redactedUrl })
+      try {
+        // The `:probe` suffix keeps tooling keyed on connection_name (e.g. the
+        // management-API force-close used in tests) off this throwaway connection.
+        const probe = await amqplib.connect(this.url, {
+          ...this.socketOptions,
+          clientProperties: { connection_name: `${this.connectionName}:probe`, ...userClientProperties },
+        })
+        await probe.close().catch(() => {})
+        if (this.closeRequested) return
+        break
+      } catch (err) {
+        if (this.closeRequested) return
+        if (attempt >= this.policy.maxAttempts) {
+          this.handleInitialFailure(err)
+          return
+        }
+        await this.backoffSleep(attempt)
+      }
+    }
     const promise = amqplib.connect(this.url, {
       ...this.socketOptions,
       clientProperties: { connection_name: this.connectionName, ...userClientProperties },
@@ -124,11 +157,29 @@ export class ConnectionManager {
         setup: (model: ChannelModel) => this.runSetup(model),
       },
     })
-    this.connectPromise = promise
     promise.then(
       (recovering) => this.handleFirstConnect(recovering),
       (err: unknown) => this.handleInitialFailure(err),
     )
+  }
+
+  /** The recovery backoff formula (delay, factor, jitter) — resolves early on close. */
+  private backoffSleep(attempt: number): Promise<void> {
+    const base = Math.min(this.policy.maxDelayMs, this.policy.initialDelayMs * this.policy.factor ** (attempt - 1))
+    const jitterPart = base * this.policy.jitter
+    const offset = jitterPart > 0 ? Math.random() * jitterPart * 2 - jitterPart : 0
+    const delay = Math.max(0, Math.round(base + offset))
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.cancelBackoff = null
+        resolve()
+      }, delay)
+      this.cancelBackoff = () => {
+        clearTimeout(timer)
+        this.cancelBackoff = null
+        resolve()
+      }
+    })
   }
 
   /** Resolves when connected; rejects when closed or the reconnect policy gave up. */
@@ -206,13 +257,14 @@ export class ConnectionManager {
     }
     this.closeRequested = true
     this.rejectOpenWaiters(new ConeyClosedError('the client was closed'))
+    this.cancelBackoff?.()
     if (this.recovering !== null) {
       // Stops the reconnect loop immediately, even mid-backoff (verified on 1.2.0/2.0.1).
       await this.recovering.close().catch(() => {})
     }
-    // Initial connect still in flight: handleFirstConnect sees closeRequested and
-    // closes the fresh connection the moment amqplib hands it over (bounded zombie
-    // window); a rejected initial connect needs no cleanup.
+    // Phase 1 (the probe loop) exits at its next closeRequested check; a recovery
+    // connect already in flight is closed by handleFirstConnect the moment amqplib
+    // hands it over (bounded zombie window).
     this.phaseValue = 'closed'
   }
 

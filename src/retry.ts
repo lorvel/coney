@@ -12,6 +12,11 @@ export interface RetryPolicy {
   readonly delays: readonly number[]
 }
 
+/** Ladder for queue defs without `retry` when the client sets none (spec §6 defaults). */
+export const DEFAULT_RETRY: RetryPolicy = Object.freeze({
+  delays: Object.freeze([10_000, 60_000, 300_000]) as readonly number[],
+})
+
 /** The ladder a queue def actually uses: its own `retry`, the client default, or none. */
 export function effectiveDelays(
   defRetry: RetryPolicy | false | undefined,

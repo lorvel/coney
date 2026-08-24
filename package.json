@@ -3,12 +3,26 @@
   "version": "0.0.0",
   "private": true,
   "description": "An opinionated RabbitMQ toolkit for Node.js: work queues with broker-held retry ladders and dead-letter queues, publisher confirms, automatic reconnection, graceful drain, and topic pub/sub.",
-  "keywords": ["rabbitmq", "amqp", "amqplib", "queue", "worker", "retry", "dead-letter", "pubsub"],
+  "keywords": [
+    "rabbitmq",
+    "amqp",
+    "amqplib",
+    "queue",
+    "worker",
+    "retry",
+    "dead-letter",
+    "pubsub"
+  ],
   "license": "MIT",
   "author": "Tu Tran",
   "type": "module",
-  "engines": { "node": ">=20.19" },
-  "repository": { "type": "git", "url": "git+https://gitlab.com/lorvel/packages/coney.git" },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.com/lorvel/packages/coney.git"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -17,16 +31,22 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
   "sideEffects": false,
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc -p tsconfig.test.json",
     "typecheck:design": "tsc -p docs/api",
     "test": "tsx --test test/*.test.ts",
+    "test:integration": "tsx --test test/integration/*.test.ts",
     "prepare": "yarn build"
   },
-  "peerDependencies": { "amqplib": ">=1.1.0 <3.0.0" },
+  "peerDependencies": {
+    "amqplib": ">=1.1.0 <3.0.0"
+  },
   "devDependencies": {
     "@types/node": "^25.9.1",
     "amqplib": "^2.0.1",

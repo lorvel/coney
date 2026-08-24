@@ -19,3 +19,21 @@ build:
     paths:
       - dist/
     expire_in: 1 hour
+
+# The broker-backed suite against a throwaway RabbitMQ service container.
+# The image restricts `guest` to loopback, so a dedicated user comes in through
+# job variables (service containers inherit them).
+test-integration:
+  stage: build
+  services:
+    - name: rabbitmq:4.3-management
+      alias: rabbitmq
+  variables:
+    RABBITMQ_DEFAULT_USER: coney
+    RABBITMQ_DEFAULT_PASS: coney-it
+    RABBITMQ_URL: amqp://coney:coney-it@rabbitmq:5672
+    RABBITMQ_MGMT_URL: http://coney:coney-it@rabbitmq:15672
+  script:
+    - yarn install --frozen-lockfile
+    - node scripts/wait-broker.mjs
+    - yarn test:integration
