@@ -1,11 +1,12 @@
 stages:
   - build
+  - publish
 
 default:
   image: node:22
 
-# Validate on every push / merge request. The publish job (tag -> npm registry)
-# arrives with the first release.
+# Validate on every push / merge request (tag pipelines included, so a release
+# is fully validated — unit AND broker suite — before the publish job runs).
 build:
   stage: build
   script:
@@ -57,3 +58,19 @@ test-integration:
     - yarn install --frozen-lockfile
     - node scripts/wait-broker.mjs
     - yarn test:integration
+
+# Publish to the project's GitLab npm registry, only when a git tag is pushed.
+# package.json "version" must match the tag (`yarn release` tags from it).
+publish:
+  stage: publish
+  rules:
+    - if: '$CI_COMMIT_TAG'
+  script:
+    - |
+      {
+        echo "@lorvel:registry=https://gitlab.com/api/v4/projects/${CI_PROJECT_ID}/packages/npm/"
+        echo "//gitlab.com/api/v4/projects/${CI_PROJECT_ID}/packages/npm/:_authToken=${CI_JOB_TOKEN}"
+      } > .npmrc
+    - yarn install --frozen-lockfile
+    - yarn build
+    - npm publish

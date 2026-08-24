@@ -1,7 +1,6 @@
 {
   "name": "@lorvel/coney",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "An opinionated RabbitMQ toolkit for Node.js: work queues with broker-held retry ladders and dead-letter queues, publisher confirms, automatic reconnection, graceful drain, and topic pub/sub.",
   "keywords": [
     "rabbitmq",
@@ -46,7 +45,8 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "prepare": "yarn build"
+    "prepare": "yarn build",
+    "release": "sh scripts/release.sh"
   },
   "peerDependencies": {
     "amqplib": ">=1.1.0 <3.0.0"

@@ -18,6 +18,17 @@ For the broker-backed tests, start a throwaway RabbitMQ with
 `docker compose -f docker-compose.test.yml up -d --wait` and pass
 `RABBITMQ_URL` / `RABBITMQ_MGMT_URL` as documented in that file.
 
+## Releasing
+
+1. Bump `version` in `package.json` and turn the unreleased notes in
+   `CHANGELOG.md` into a dated section for that version.
+2. Commit, push, and wait for the pipeline to pass.
+3. `yarn release` — tags `v<version>` and pushes the tag; the tag pipeline runs
+   the full validation again and publishes to the GitLab package registry.
+
+During 0.x, a MINOR bump may be breaking (say so in the changelog); PATCH is
+fixes only.
+
 ## Ground rules
 
 - `docs/design.md` is the canonical spec. Code follows it; when a change of
