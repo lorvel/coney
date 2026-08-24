@@ -21,6 +21,19 @@ build:
     expire_in: 1 hour
 
 # The broker-backed suite against a throwaway RabbitMQ service container.
+#
+# The runner attaches containers to the HOST network (verified from pipeline #4:
+# the service saw the host's hostname and epmd, and no service alias resolved),
+# so the defaults collide with the real broker already running on that host:
+#   - `rabbitmq`/`alias` DNS does not exist        -> talk to 127.0.0.1 instead;
+#   - 5672/15672/15692/25672 are taken             -> shift AMQP to 5673 (the
+#     Erlang dist port follows as NODE_PORT+20000 = 25673) and move the
+#     management/prometheus listeners;
+#   - epmd is shared with the host's `rabbit` node -> register as `coney-ci`.
+# The runner's 30s service health check probes the DEFAULT ports, so it prints a
+# harmless "probably didn't start properly" warning; scripts/wait-broker.mjs is
+# the real readiness gate. One coney pipeline at a time (concurrent runs would
+# race for 5673 — GitLab's redundant-pipeline auto-cancel covers the usual case).
 # The image restricts `guest` to loopback, so a dedicated user comes in through
 # job variables (service containers inherit them).
 test-integration:
@@ -31,8 +44,13 @@ test-integration:
   variables:
     RABBITMQ_DEFAULT_USER: coney
     RABBITMQ_DEFAULT_PASS: coney-it
-    RABBITMQ_URL: amqp://coney:coney-it@rabbitmq:5672
-    RABBITMQ_MGMT_URL: http://coney:coney-it@rabbitmq:15672
+    RABBITMQ_NODENAME: coney-ci
+    RABBITMQ_NODE_PORT: "5673"
+    RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: >-
+      -rabbitmq_management listener [{port,15673}]
+      -rabbitmq_prometheus tcp_config [{port,15693}]
+    RABBITMQ_URL: amqp://coney:coney-it@127.0.0.1:5673
+    RABBITMQ_MGMT_URL: http://coney:coney-it@127.0.0.1:15673
   script:
     - yarn install --frozen-lockfile
     - node scripts/wait-broker.mjs
