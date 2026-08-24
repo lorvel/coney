@@ -69,7 +69,9 @@ describe('the consume pipeline outcome table (spec §4)', () => {
   })
 
   it('UnrecoverableError dead-letters immediately, ladder untouched', async () => {
-    const outcome = await run({ handler: () => Promise.reject(new UnrecoverableError('bad payload')) })
+    const outcome = await run({
+      handler: () => Promise.reject(new UnrecoverableError('bad payload')),
+    })
     assert.equal(outcome.kind, 'dead')
     assert.equal((outcome as { reason: string }).reason, 'unrecoverable: bad payload')
   })
@@ -197,15 +199,26 @@ describe('reason truncation and delivery context', () => {
   })
 
   it('reasons longer than 500 chars are capped in dead outcomes', async () => {
-    const outcome = await run({ attempt: 3, handler: () => Promise.reject(new Error('e'.repeat(600))) })
+    const outcome = await run({
+      attempt: 3,
+      handler: () => Promise.reject(new Error('e'.repeat(600))),
+    })
     assert.equal((outcome as { reason: string }).reason.length, 500)
   })
 
   it('contextOf reads attempt from x-retries and tolerates foreign messages', () => {
     const raw = (properties: Record<string, unknown>, redelivered = false) =>
-      ({ fields: { routingKey: 'k', redelivered }, properties, content: Buffer.from('{}') }) as never
+      ({
+        fields: { routingKey: 'k', redelivered },
+        properties,
+        content: Buffer.from('{}'),
+      }) as never
     const ours = contextOf(
-      raw({ messageId: 'id-1', appId: 'svc', headers: { 'x-retries': 2, 'x-published-at': '2026-08-24T00:00:00.000Z' } }),
+      raw({
+        messageId: 'id-1',
+        appId: 'svc',
+        headers: { 'x-retries': 2, 'x-published-at': '2026-08-24T00:00:00.000Z' },
+      }),
     )
     assert.equal(ours.attempt, 3)
     assert.equal(ours.id, 'id-1')
@@ -216,7 +229,9 @@ describe('reason truncation and delivery context', () => {
     assert.equal(foreign.id, '') // no generated id: it would not survive a redelivery
     assert.equal(foreign.redelivered, true)
     assert.equal(foreign.publishedAt, undefined)
-    const garbage = contextOf(raw({ headers: { 'x-retries': 'two', 'x-published-at': 'not-a-date' } }))
+    const garbage = contextOf(
+      raw({ headers: { 'x-retries': 'two', 'x-published-at': 'not-a-date' } }),
+    )
     assert.equal(garbage.attempt, 1)
     assert.equal(garbage.publishedAt, undefined)
   })

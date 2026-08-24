@@ -6,7 +6,7 @@ Design spec for `@lorvel/coney` v0.1 (coney 3.x). Review rounds 1–4 (17 decisi
 
 ## 1. Architecture
 
-**What the library is**: an opinionated, thin layer over `amqplib` that owns the connection, the topology and the message lifecycle. Applications describe *queues/topics + payload + retry ladder* as pure values and write handlers. Generic by construction: no env access, no validation-library dependency, no tenant names in `src/`.
+**What the library is**: an opinionated, thin layer over `amqplib` that owns the connection, the topology and the message lifecycle. Applications describe _queues/topics + payload + retry ladder_ as pure values and write handlers. Generic by construction: no env access, no validation-library dependency, no tenant names in `src/`.
 
 **Process model** — one `Coney` per process: **one AMQP connection**, **one ConfirmChannel shared by all publishes** (confirms arrive in order → a single pending map), **one ConfirmChannel per consumer/subscription** (prefetch is per channel; a channel-level failure such as 406 cannot take down other consumers; retry/dead publishes go through the consuming channel so they are confirmed before the original is acked).
 
@@ -64,21 +64,22 @@ flowchart LR
 ## 2. API surface
 
 The complete public API lives in [api/coney.d.ts](api/coney.d.ts) — every export, with normative TSDoc (semantics, defaults, thrown errors). Nothing in it references amqplib types, so consumers never need `@types/amqplib`. The implementation must match these signatures exactly; the README API reference derives from this file.
+
 ## 3. Topology & wire
 
 **Objects** (wire name = `<prefix>.<name>` when a prefix is set; `durable: true` everywhere; no `autoDelete` except exclusive subscription queues)
 
-| Object | Count | Declared with | Args |
-|---|---|---|---|
-| `<q>` main queue | 1 per def | `assertQueue` | none (classic) |
-| `<q>.dead` | 1 per def | `assertQueue` | none |
-| `<prefix>.retry.<dur>` exchange | 1 per distinct delay in the client | `assertExchange` type `fanout` | — |
-| `<prefix>.retry.<dur>` queue, bound to the exchange of the same name (key `''`) | same | `assertQueue` | `x-message-ttl: <ms>`, `x-dead-letter-exchange: ''` — **no** `x-dead-letter-routing-key` |
-| `<t>` topic exchange | 1 per def | `assertExchange` type `topic` | — |
-| bound queue bindings | per `bindings[]` entry × pattern | `bindQueue(<q>, <t>, pattern)` | — |
-| subscription queue | 1 per `subscribe()` per connection | `assertQueue('', { exclusive: true, autoDelete: true })` + `bindQueue` per pattern | none |
+| Object                                                                          | Count                              | Declared with                                                                      | Args                                                                                     |
+| ------------------------------------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `<q>` main queue                                                                | 1 per def                          | `assertQueue`                                                                      | none (classic)                                                                           |
+| `<q>.dead`                                                                      | 1 per def                          | `assertQueue`                                                                      | none                                                                                     |
+| `<prefix>.retry.<dur>` exchange                                                 | 1 per distinct delay in the client | `assertExchange` type `fanout`                                                     | —                                                                                        |
+| `<prefix>.retry.<dur>` queue, bound to the exchange of the same name (key `''`) | same                               | `assertQueue`                                                                      | `x-message-ttl: <ms>`, `x-dead-letter-exchange: ''` — **no** `x-dead-letter-routing-key` |
+| `<t>` topic exchange                                                            | 1 per def                          | `assertExchange` type `topic`                                                      | —                                                                                        |
+| bound queue bindings                                                            | per `bindings[]` entry × pattern   | `bindQueue(<q>, <t>, pattern)`                                                     | —                                                                                        |
+| subscription queue                                                              | 1 per `subscribe()` per connection | `assertQueue('', { exclusive: true, autoDelete: true })` + `bindQueue` per pattern | none                                                                                     |
 
-Why the bucket works: without `x-dead-letter-routing-key`, an expired message is dead-lettered with the routing key it was *published* with; a fanout exchange keeps that key, so `DLX ''` (default exchange) delivers it to the queue named by the key. The retry publish therefore uses **the consuming queue's wire name as routing key** — never `fields.routingKey` (for bound queues that is the topic key). Verified on 4.3.0: two messages in one bucket with different keys returned to their own queues after exactly the TTL, headers intact, `x-death[0] = { reason: 'expired', 'routing-keys': [<q>] }` added by the broker.
+Why the bucket works: without `x-dead-letter-routing-key`, an expired message is dead-lettered with the routing key it was _published_ with; a fanout exchange keeps that key, so `DLX ''` (default exchange) delivers it to the queue named by the key. The retry publish therefore uses **the consuming queue's wire name as routing key** — never `fields.routingKey` (for bound queues that is the topic key). Verified on 4.3.0: two messages in one bucket with different keys returned to their own queues after exactly the TTL, headers intact, `x-death[0] = { reason: 'expired', 'routing-keys': [<q>] }` added by the broker.
 
 **Duration label** `<dur>`: from ms, largest units first, zero units omitted: `500ms`, `10s`, `1m`, `1m30s`, `2h30m`. Deterministic, so clients with the same delay share the bucket.
 
@@ -86,21 +87,21 @@ Why the bucket works: without `x-dead-letter-routing-key`, an expired message is
 
 **Message on the wire** — body is the JSON encoding of exactly what was published (`contentType: application/json`, UTF-8, no envelope). Properties:
 
-| Property / header | Set by | Value |
-|---|---|---|
-| `messageId` | publish | `PublishOptions.messageId` or UUID v4; preserved through retry/dead/replay |
-| `timestamp` | publish | unix seconds |
-| `type` | publish | queue: logical queue name · topic: routing key |
-| `appId` | publish | `ConeyOptions.name` when set |
-| `deliveryMode` | publish | `2` unless `persistent: false` |
-| `x-published-at` | publish | ISO-8601 ms |
-| user headers | publish | `PublishOptions.headers` (keys starting `x-` rejected with `ConeyConfigError`) |
-| `x-retries` | retry | number of failed attempts so far (`attempt = x-retries + 1`) |
-| `x-retry-at` | retry | ISO-8601 — when the bucket will return the message |
-| `x-reason` | dead | `schema: <msg>` · `unrecoverable: <msg>` · `exhausted after <n> attempts: <msg>` · `decode: <msg>` — truncated to 500 chars |
-| `x-failed-at` | dead | ISO-8601 |
-| `x-replayed` | replayDead | count of replays (informational) |
-| `x-death`, `x-first-death-*`, `x-last-death-*` | broker | never read by the library |
+| Property / header                              | Set by     | Value                                                                                                                       |
+| ---------------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `messageId`                                    | publish    | `PublishOptions.messageId` or UUID v4; preserved through retry/dead/replay                                                  |
+| `timestamp`                                    | publish    | unix seconds                                                                                                                |
+| `type`                                         | publish    | queue: logical queue name · topic: routing key                                                                              |
+| `appId`                                        | publish    | `ConeyOptions.name` when set                                                                                                |
+| `deliveryMode`                                 | publish    | `2` unless `persistent: false`                                                                                              |
+| `x-published-at`                               | publish    | ISO-8601 ms                                                                                                                 |
+| user headers                                   | publish    | `PublishOptions.headers` (keys starting `x-` rejected with `ConeyConfigError`)                                              |
+| `x-retries`                                    | retry      | number of failed attempts so far (`attempt = x-retries + 1`)                                                                |
+| `x-retry-at`                                   | retry      | ISO-8601 — when the bucket will return the message                                                                          |
+| `x-reason`                                     | dead       | `schema: <msg>` · `unrecoverable: <msg>` · `exhausted after <n> attempts: <msg>` · `decode: <msg>` — truncated to 500 chars |
+| `x-failed-at`                                  | dead       | ISO-8601                                                                                                                    |
+| `x-replayed`                                   | replayDead | count of replays (informational)                                                                                            |
+| `x-death`, `x-first-death-*`, `x-last-death-*` | broker     | never read by the library                                                                                                   |
 
 ## 4. Semantics
 
@@ -108,18 +109,18 @@ Why the bucket works: without `x-dead-letter-routing-key`, an expired message is
 
 **Consume** — per delivery on the consumer's channel, `prefetch` bounds concurrent handler calls:
 
-| Step | Failure | Outcome |
-|---|---|---|
-| decode JSON | invalid | dead, `x-reason: decode` |
-| `schema.parse` | throws | dead, `x-reason: schema: …` (retry ladder NOT consumed) |
-| handler resolves | — | `ack` |
-| handler throws `UnrecoverableError` | — | dead, `x-reason: unrecoverable: <message>` |
-| handler throws other / times out | `attempt ≤ delays.length` | publish to bucket `delays[attempt-1]` with `x-retries = attempt`, `x-retry-at`; wait for confirm; then `ack` original → `coney.message_retried` |
-| handler throws other / times out | `attempt > delays.length` or `retry: false` | publish to `<q>.dead`; confirm; `ack` → `coney.message_dead` |
+| Step                                | Failure                                     | Outcome                                                                                                                                         |
+| ----------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| decode JSON                         | invalid                                     | dead, `x-reason: decode`                                                                                                                        |
+| `schema.parse`                      | throws                                      | dead, `x-reason: schema: …` (retry ladder NOT consumed)                                                                                         |
+| handler resolves                    | —                                           | `ack`                                                                                                                                           |
+| handler throws `UnrecoverableError` | —                                           | dead, `x-reason: unrecoverable: <message>`                                                                                                      |
+| handler throws other / times out    | `attempt ≤ delays.length`                   | publish to bucket `delays[attempt-1]` with `x-retries = attempt`, `x-retry-at`; wait for confirm; then `ack` original → `coney.message_retried` |
+| handler throws other / times out    | `attempt > delays.length` or `retry: false` | publish to `<q>.dead`; confirm; `ack` → `coney.message_dead`                                                                                    |
 
 Invariants: retry/dead publishes are **confirmed before the original is acked** (no loss inside the library; a crash in between yields a duplicate, never a loss). If that publish fails because the channel is gone, the original cannot be acked either → the broker redelivers with `redelivered: true` and the **same** `attempt` ("free retry"). `timeoutMs`: on expiry the message is failed immediately (retry/dead as above), `signal` is aborted, and the handler's eventual settlement is only logged (`coney.handler_late`) — duplicates are possible and acceptable under the at-least-once contract. Broker-initiated cancel (queue deleted) arrives as a `null` delivery: log `coney.consumer_stopped` and re-attach on the next `setup`. Handler exceptions are always caught; nothing thrown by user code ever reaches amqplib's emitter (a synchronous throw inside an amqplib callback kills the connection — verified).
 
-**Subscriptions** (`TopicHandle.subscribe`): exclusive server-named queue bound to each pattern; consumer tag `<name|coney>.<topic>.<n>`; lib acks after the handler settles; a throw → `coney.subscription_error` + ack (drop); `prefetch` default 1 gives in-order processing. After a reconnect a *new* queue is declared and bound; messages published in between are lost (`coney.subscription_reset`). `cancel()` deletes nothing (exclusive queues vanish with the channel).
+**Subscriptions** (`TopicHandle.subscribe`): exclusive server-named queue bound to each pattern; consumer tag `<name|coney>.<topic>.<n>`; lib acks after the handler settles; a throw → `coney.subscription_error` + ack (drop); `prefetch` default 1 gives in-order processing. After a reconnect a _new_ queue is declared and bound; messages published in between are lost (`coney.subscription_reset`). `cancel()` deletes nothing (exclusive queues vanish with the channel).
 
 **Reconnect** — delegated to amqplib ≥ 1.1 `recovery` (`connect(url, { ...socketOptions, recovery })`, mapping `initialDelayMs→initialDelay`, `maxDelayMs→maxDelay`, `factor`, `jitter`, `maxAttempts→maxRetries`). Verified on 1.2.0: the initial connect retries with the same policy and `connect()` rejects when `maxRetries` is exhausted (`ECONNREFUSED` after 304 ms with 2 retries); on a forced close the model emits `disconnect` → `reconnect-scheduled {attempt, delay}` → runs `setup(model)` again → `connect`; **channels created outside `setup` are dead after a reconnect** → the publisher channel and every consumer channel are (re)created inside `setup`; `createChannel()` called while disconnected waits for the connection (used for the bounded publish wait); `close()` during a reconnect resolves immediately and stops the loop. One wrinkle: `connect()` only hands back the recovering model after the first successful connection, so before that there is NO handle — amqplib's own initial-connect retry loop cannot be stopped from outside (with `maxAttempts: Infinity` against a dead endpoint, a `close()` during boot would leak the loop forever; verified on 2.0.1). coney therefore runs the initial connect itself: a cancellable probe loop of plain `connect()` attempts under the same policy (one `coney.connecting {attempt}` per attempt; `close()` stops it mid-backoff; exhaustion → `coney.reconnect_exhausted`), and only hands over to the recovery connect once a probe succeeded — the broker is up, so that connect succeeds outright (a broker dying inside that milliseconds-wide window falls back to the bounded-zombie close). The probe announces itself as `<connection_name>:probe` so operational tooling keyed on `connection_name` never confuses it with the real connection. From the first success on, every reconnect attempt is amqplib's and is logged via `coney.reconnecting`. **`setup` must never throw for configuration problems** — amqplib treats a rejected `setup` as a failed connection and retries forever; coney's `setup` catches per-def assertion errors, logs `coney.topology_failed`, rejects the pending callers of that def with `ConeyTopologyError` and keeps the connection. A 406 closes only the channel that issued the assert (verified; `err.code === 406`). `coney.reconnect_exhausted` → state `closed`, pending publishes/open() reject `ConeyUnavailableError`.
 
@@ -148,7 +149,7 @@ Five real consumer flows written against §2, type-checked with it — see [api/
 
 ## 6. Decision log
 
-Each entry: **decision — why — rejected**. Owner-approved 2026-08-24 unless marked *default*.
+Each entry: **decision — why — rejected**. Owner-approved 2026-08-24 unless marked _default_.
 
 1. **API shape: handle style** (`defineQueue`/`defineTopic` pure defs; `mq.queue(def)`/`mq.topic(def)` cached handles) — types flow from the def, ops methods hang off the handle, defs live in a catalog without a client — rejected flat `mq.publish(def, body)` (client grows per op) and merged `mq.queue({...})` (def tied to a client).
 2. **Retry: shared buckets keyed by delay value** — only design that is broker-held, exact, ladder-capable and constant-size (K = distinct delays); matches MassTransit 9.1 `UseQueueBasedDelayedRedelivery`, NServiceBus (28 binary levels), EasyNetQ, Symfony — rejected per-level-per-queue (M×n queues), one `.retry` + per-message TTL (coney 2: head-of-line blocking), bounce via main queue (each hop queues behind the backlog), park in worker RAM (Celery/Dramatiq/Rascal: memory cliff + `consumer_timeout`), constant per-queue delay (Sneakers/Spring: no ladder), delayed-message-exchange plugin (archived 2026-04-16, Mnesia removed in RabbitMQ 4.3). Dead stays per-queue (alerting + replay ergonomics). DLX targets the default exchange (0 bindings) instead of MassTransit's `mt-delay-return`.
@@ -168,7 +169,7 @@ Each entry: **decision — why — rejected**. Owner-approved 2026-08-24 unless 
 16. **ESM-only, Node ≥ 20.19** (`require(esm)` unflagged), one `exports` entry — rejected dual CJS/ESM.
 17. **Reconnect built on amqplib ≥ 1.1 `recovery`**, coney owns `setup(model)`; spike verified (§4); peer `amqplib >=1.1.0 <3` — fallback to a hand-written loop with the same public API if a future amqplib change breaks the contract; rejected own loop as the default (~150 lines to maintain, and amqplib now also routes listener exceptions via `handler-error`).
 
-*Defaults (not separately approved)*: `prefetch` 1; default ladder `[10s, 1m, 5m]` (total ≈ 6 min; coney 2's `[1m, 4m, 9m]` kept only as a migration example — Lorvel defs set their delays explicitly); names permissive (≤ 200 bytes, case preserved; lowercase dotted names are a Lorvel convention enforced in its catalog, not by the library); `ConeyError.code` strings; `UnrecoverableError` unprefixed (BullMQ precedent); no amqplib types in the public surface.
+_Defaults (not separately approved)_: `prefetch` 1; default ladder `[10s, 1m, 5m]` (total ≈ 6 min; coney 2's `[1m, 4m, 9m]` kept only as a migration example — Lorvel defs set their delays explicitly); names permissive (≤ 200 bytes, case preserved; lowercase dotted names are a Lorvel convention enforced in its catalog, not by the library); `ConeyError.code` strings; `UnrecoverableError` unprefixed (BullMQ precedent); no amqplib types in the public surface.
 
 **Parent OQ-1..11** — OQ-1 catalog per service (`src/mq/defs.ts`), shared package when > 3 queues; the DomainEvent guard in `@lorvel/core` is wrapped as `Schema<T>`. OQ-2 drop `QUEUE_NAME`/`TASK_QUEUE_NAME`/`MAX_RETRIES` env (code contracts), keep `RABBITMQ_URL`/`CONSUMER_PREFETCH`. OQ-3 classic in v0.1; quorum = v0.2 `type` option (`x-queue-type` immutable → new queues + cutover; single-node prod gains nothing today; buckets must share the type). OQ-4 → default ladder above. OQ-5 → 3. OQ-6 `npm deprecate coney@"<3"` at the 3.0.0 publish. OQ-7 → 15. OQ-8 integration disconnect = management API `DELETE /api/connections/<name>` (library sets `clientProperties.connection_name = coney:<name>`), polled until visible. OQ-9 rename `name` + consumer specifiers at OSS time, no dual publish. OQ-10 → 16. OQ-11 GitHub `tutv/coney` public home, GitLab source of truth until then.
 

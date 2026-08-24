@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { createConeyMock } from '../src/mock/client.js'
 import { defineQueue, defineTopic, type Schema } from '../src/defs/define.js'
-import { ConeyClosedError, ConeyConfigError, ConeySchemaError, UnrecoverableError } from '../src/core/errors.js'
+import {
+  ConeyClosedError,
+  ConeyConfigError,
+  ConeySchemaError,
+  UnrecoverableError,
+} from '../src/core/errors.js'
 
 interface Job {
   id: string
@@ -40,7 +45,10 @@ describe('createConeyMock: the Coney surface', () => {
     assert.equal(mock.state, 'closed')
     assert.equal(subscription.active, false)
     await assert.rejects(jobs.publish({ x: 1 }), ConeyClosedError)
-    await assert.rejects(jobs.consume(() => {}), ConeyClosedError)
+    await assert.rejects(
+      jobs.consume(() => {}),
+      ConeyClosedError,
+    )
     await assert.rejects(jobs.inspect(), ConeyClosedError)
     await assert.rejects(jobs.replayDead(), ConeyClosedError)
     await assert.rejects(jobs.purgeDead(), ConeyClosedError)
@@ -58,7 +66,10 @@ describe('createConeyMock: the Coney surface', () => {
     const mock = createConeyMock()
     const def = defineQueue({ name: 'jobs' })
     assert.equal(mock.queue(def), mock.queue(defineQueue({ name: 'jobs' })))
-    assert.throws(() => mock.queue(defineQueue({ name: 'jobs', retry: { delays: [5] } })), ConeyConfigError)
+    assert.throws(
+      () => mock.queue(defineQueue({ name: 'jobs', retry: { delays: [5] } })),
+      ConeyConfigError,
+    )
   })
 })
 
@@ -88,7 +99,10 @@ describe('mock publish: validate exactly like the real client, then record', () 
     await assert.rejects(jobs.publish({ id: 'a' }, { headers: { 'x-mine': 1 } }), ConeyConfigError)
     const events = mock.topic(defineTopic({ name: 'events' }))
     await assert.rejects(events.publish('', { ok: 1 }), ConeyConfigError)
-    await assert.rejects(mock.queue(defineQueue({ name: 'raw' })).publish(undefined), ConeyConfigError)
+    await assert.rejects(
+      mock.queue(defineQueue({ name: 'raw' })).publish(undefined),
+      ConeyConfigError,
+    )
     assert.equal(mock.published.length, 0)
   })
 
@@ -121,10 +135,16 @@ describe('mock deliver: the real pipeline in-process', () => {
     fail = true
     const first = await mock.deliver(def, { n: 1 })
     assert.equal(first.outcome, 'retry')
-    assert.deepEqual({ attempt: (first as { attempt: number }).attempt, delayMs: (first as { delayMs: number }).delayMs }, {
-      attempt: 1,
-      delayMs: 100,
-    })
+    assert.deepEqual(
+      {
+        attempt: (first as { attempt: number }).attempt,
+        delayMs: (first as { delayMs: number }).delayMs,
+      },
+      {
+        attempt: 1,
+        delayMs: 100,
+      },
+    )
     const second = await mock.deliver(def, { n: 1 }, { attempt: 2 })
     assert.equal((second as { delayMs: number }).delayMs, 200)
     const third = await mock.deliver(def, { n: 1 }, { attempt: 3 })
@@ -177,11 +197,21 @@ describe('mock deliver: the real pipeline in-process', () => {
   it('builds a faithful Message: id, attempt, headers, redelivered, signal + timeoutMs', async () => {
     const mock = createConeyMock({ name: 'svc' })
     const def = defineQueue({ name: 'jobs' })
-    const messages: Array<{ id: string; attempt: number; redelivered: boolean; headers: Record<string, unknown>; appId?: string }> = []
+    const messages: Array<{
+      id: string
+      attempt: number
+      redelivered: boolean
+      headers: Record<string, unknown>
+      appId?: string
+    }> = []
     await mock.queue(def).consume((incoming) => {
       messages.push(incoming as (typeof messages)[number])
     })
-    await mock.deliver(def, { n: 1 }, { messageId: 'm-7', attempt: 3, redelivered: true, headers: { tenant: 't1' } })
+    await mock.deliver(
+      def,
+      { n: 1 },
+      { messageId: 'm-7', attempt: 3, redelivered: true, headers: { tenant: 't1' } },
+    )
     const seen = messages[0]
     assert.ok(seen !== undefined)
     assert.equal(seen.id, 'm-7')
@@ -191,10 +221,15 @@ describe('mock deliver: the real pipeline in-process', () => {
     assert.equal(seen.headers['tenant'], 't1')
     assert.equal(seen.appId, 'svc')
     const slow = defineQueue({ name: 'slow' })
-    await mock.queue(slow).consume(() => new Promise((resolve) => setTimeout(resolve, 1000)), { timeoutMs: 15 })
+    await mock
+      .queue(slow)
+      .consume(() => new Promise((resolve) => setTimeout(resolve, 1000)), { timeoutMs: 15 })
     const timedOut = await mock.deliver(slow, {})
     assert.equal(timedOut.outcome, 'retry')
-    assert.match(((timedOut as { error: unknown }).error as Error).message, /handler timeout after 15 ms/)
+    assert.match(
+      ((timedOut as { error: unknown }).error as Error).message,
+      /handler timeout after 15 ms/,
+    )
   })
 
   it('round-robins between competing consumers of one queue', async () => {
@@ -228,7 +263,11 @@ describe('mock deliverTopic: subscriptions and bound queues, in registration ord
   it('routes by AMQP patterns and reports one outcome per match', async () => {
     const mock = createConeyMock()
     const events = defineTopic({ name: 'events' })
-    const audit = defineQueue({ name: 'audit', retry: { delays: [50] }, bindings: [{ topic: events, patterns: ['task.#'] }] })
+    const audit = defineQueue({
+      name: 'audit',
+      retry: { delays: [50] },
+      bindings: [{ topic: events, patterns: ['task.#'] }],
+    })
     const calls: string[] = []
     await mock.queue(audit).consume(() => {
       calls.push('audit')
@@ -274,13 +313,19 @@ describe('mock deliverTopic: subscriptions and bound queues, in registration ord
     await mock.topic(events).subscribe(['#'], () => {
       throw thrown
     })
-    assert.deepEqual(await mock.deliverTopic(events, 'anything', {}), [{ outcome: 'dropped', error: thrown }])
+    assert.deepEqual(await mock.deliverTopic(events, 'anything', {}), [
+      { outcome: 'dropped', error: thrown },
+    ])
   })
 
   it('gates subscriptions with the topic schema and bound queues with the queue schema', async () => {
     const mock = createConeyMock()
     const events = defineTopic({ name: 'events', schema: jobSchema })
-    const strictQueue = defineQueue({ name: 'strict', schema: jobSchema, bindings: [{ topic: events, patterns: ['#'] }] })
+    const strictQueue = defineQueue({
+      name: 'strict',
+      schema: jobSchema,
+      bindings: [{ topic: events, patterns: ['#'] }],
+    })
     await mock.topic(events).subscribe(['#'], () => {})
     await mock.queue(strictQueue).consume(() => {})
     const outcomes = await mock.deliverTopic(events, 'task.x', { id: 99 } as never)

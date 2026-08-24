@@ -44,6 +44,7 @@ export interface TopicDef<T> extends TopicDefInput<T> {
 export type AnyDef = QueueDef<unknown> | TopicDef<unknown>
 
 /** Whitespace (incl. unicode) and ASCII control characters (0x00-0x1f, 0x7f). */
+// eslint-disable-next-line no-control-regex -- matching control characters is the point of this validation
 const FORBIDDEN_CHARS = new RegExp('[\\s\\x00-\\x1f\\x7f]', 'u')
 
 /**
@@ -59,10 +60,14 @@ export function validateName(name: unknown, what: string): string {
     throw new ConeyConfigError(`${what} "${name.slice(0, 40)}..." exceeds 200 bytes (UTF-8)`)
   }
   if (FORBIDDEN_CHARS.test(name)) {
-    throw new ConeyConfigError(`${what} "${name}" must not contain whitespace or control characters`)
+    throw new ConeyConfigError(
+      `${what} "${name}" must not contain whitespace or control characters`,
+    )
   }
   if (name.startsWith('amq.') || name.startsWith('retry.')) {
-    throw new ConeyConfigError(`${what} "${name}" must not start with the reserved prefix "amq." or "retry."`)
+    throw new ConeyConfigError(
+      `${what} "${name}" must not start with the reserved prefix "amq." or "retry."`,
+    )
   }
   if (name.endsWith('.dead')) {
     throw new ConeyConfigError(`${what} "${name}" must not end with the reserved suffix ".dead"`)
@@ -82,7 +87,9 @@ export function validateRetryPolicy(retry: RetryPolicy, what: string): void {
   }
   for (const delay of retry.delays) {
     if (typeof delay !== 'number' || !Number.isInteger(delay) || delay <= 0) {
-      throw new ConeyConfigError(`${what}.delays must contain positive integers, got ${String(delay)}`)
+      throw new ConeyConfigError(
+        `${what}.delays must contain positive integers, got ${String(delay)}`,
+      )
     }
   }
 }
@@ -104,17 +111,26 @@ export function defineQueue<T = unknown>(def: QueueDefInput<T>): QueueDef<T> {
     bindings = Object.freeze(
       def.bindings.map((binding) => {
         if (binding.topic?.kind !== 'topic') {
-          throw new ConeyConfigError(`binding of queue "${def.name}" must reference a def created by defineTopic()`)
+          throw new ConeyConfigError(
+            `binding of queue "${def.name}" must reference a def created by defineTopic()`,
+          )
         }
         if (!Array.isArray(binding.patterns) || binding.patterns.length === 0) {
-          throw new ConeyConfigError(`binding of queue "${def.name}" to topic "${binding.topic.name}" needs at least one pattern`)
+          throw new ConeyConfigError(
+            `binding of queue "${def.name}" to topic "${binding.topic.name}" needs at least one pattern`,
+          )
         }
         for (const pattern of binding.patterns) {
           if (typeof pattern !== 'string' || pattern.length === 0) {
-            throw new ConeyConfigError(`binding of queue "${def.name}" to topic "${binding.topic.name}" has an empty pattern`)
+            throw new ConeyConfigError(
+              `binding of queue "${def.name}" to topic "${binding.topic.name}" has an empty pattern`,
+            )
           }
         }
-        return Object.freeze({ topic: binding.topic, patterns: Object.freeze([...binding.patterns]) as readonly string[] })
+        return Object.freeze({
+          topic: binding.topic,
+          patterns: Object.freeze([...binding.patterns]) as readonly string[],
+        })
       }),
     )
   }
@@ -140,7 +156,10 @@ export function defineTopic<T = unknown>(def: TopicDefInput<T>): TopicDef<T> {
 
 // ── Def interchangeability ──
 
-function retryEqual(a: RetryPolicy | false | undefined, b: RetryPolicy | false | undefined): boolean {
+function retryEqual(
+  a: RetryPolicy | false | undefined,
+  b: RetryPolicy | false | undefined,
+): boolean {
   if (a === b) return true
   if (a === false || b === false || a === undefined || b === undefined) return false
   return a.delays.length === b.delays.length && a.delays.every((delay, i) => delay === b.delays[i])
@@ -205,7 +224,9 @@ export function parseBody<T>(def: QueueDef<T> | TopicDef<T>, body: T): unknown {
   try {
     return def.schema.parse(body)
   } catch (err) {
-    throw new ConeySchemaError(`the body published to "${def.name}" failed its schema`, { cause: err })
+    throw new ConeySchemaError(`the body published to "${def.name}" failed its schema`, {
+      cause: err,
+    })
   }
 }
 

@@ -47,7 +47,9 @@ function exportedDeclarations(entryPath) {
     const resolved = symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol
     const declarations = (resolved.declarations ?? [])
       .filter((decl) => !ts.isSourceFile(decl))
-      .map((decl) => normalize(printer.printNode(ts.EmitHint.Unspecified, decl, decl.getSourceFile())))
+      .map((decl) =>
+        normalize(printer.printNode(ts.EmitHint.Unspecified, decl, decl.getSourceFile())),
+      )
       .sort()
     out.set(symbol.name, declarations.join('\n---\n'))
   }
@@ -87,7 +89,9 @@ for (const [name, contractText] of contract) {
 }
 
 if (failures > 0) {
-  console.error(`diff-api: ${failures} mismatch(es) between dist/index.d.ts and docs/api/coney.d.ts`)
+  console.error(
+    `diff-api: ${failures} mismatch(es) between dist/index.d.ts and docs/api/coney.d.ts`,
+  )
   process.exit(1)
 }
 console.log(`diff-api: ${contract.size} exports match the contract exactly`)

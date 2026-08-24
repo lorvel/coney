@@ -15,14 +15,19 @@ export const MGMT_URL = process.env['RABBITMQ_MGMT_URL']
 
 /** node:test `skip` option for suites needing a broker (and optionally the management API). */
 export const skipWithoutBroker = BROKER_URL === undefined && 'RABBITMQ_URL not set'
-export const skipWithoutMgmt = (BROKER_URL === undefined || MGMT_URL === undefined) && 'RABBITMQ_URL / RABBITMQ_MGMT_URL not set'
+export const skipWithoutMgmt =
+  (BROKER_URL === undefined || MGMT_URL === undefined) && 'RABBITMQ_URL / RABBITMQ_MGMT_URL not set'
 
 /** A unique prefix per test FILE (files run concurrently — never share state). */
 export function newRunPrefix(tag: string): string {
   return `it.${tag}${process.pid.toString(36)}${Date.now().toString(36)}`
 }
 
-export async function waitFor(predicate: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
+export async function waitFor(
+  predicate: () => boolean,
+  what: string,
+  timeoutMs = 10_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
@@ -30,7 +35,11 @@ export async function waitFor(predicate: () => boolean, what: string, timeoutMs 
   }
 }
 
-export async function waitForAsync(predicate: () => Promise<boolean>, what: string, timeoutMs = 10_000): Promise<void> {
+export async function waitForAsync(
+  predicate: () => Promise<boolean>,
+  what: string,
+  timeoutMs = 10_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!(await predicate())) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
@@ -55,7 +64,12 @@ export async function withRawChannel<T>(fn: (ch: amqplib.Channel) => Promise<T>)
 }
 
 /** Queue/exchange names created under a prefix for a set of defs. */
-export function namesFor(prefix: string, queueNames: readonly string[], delays: readonly number[], topicNames: readonly string[] = []) {
+export function namesFor(
+  prefix: string,
+  queueNames: readonly string[],
+  delays: readonly number[],
+  topicNames: readonly string[] = [],
+) {
   const queues = queueNames.flatMap((name) => [`${prefix}.${name}`, `${prefix}.${name}.dead`])
   const buckets = [...new Set(delays)].map((delayMs) => `${prefix}.retry.${durationLabel(delayMs)}`)
   return {
@@ -65,7 +79,10 @@ export function namesFor(prefix: string, queueNames: readonly string[], delays: 
 }
 
 /** Delete everything a test created. Refuses names outside the `it.` namespace. */
-export async function cleanup(names: { queues: readonly string[]; exchanges: readonly string[] }): Promise<void> {
+export async function cleanup(names: {
+  queues: readonly string[]
+  exchanges: readonly string[]
+}): Promise<void> {
   for (const name of [...names.queues, ...names.exchanges]) {
     assert.ok(name.startsWith('it.'), `cleanup refuses to touch "${name}" (shared broker)`)
   }
@@ -91,7 +108,11 @@ export async function cleanup(names: { queues: readonly string[]; exchanges: rea
   }
 }
 
-export function eventCollector(): { events: ConeyLogEvent[]; log: (event: ConeyLogEvent) => void; names: () => string[] } {
+export function eventCollector(): {
+  events: ConeyLogEvent[]
+  log: (event: ConeyLogEvent) => void
+  names: () => string[]
+} {
   const events: ConeyLogEvent[] = []
   return { events, log: (event) => events.push(event), names: () => events.map((e) => e.event) }
 }
@@ -115,7 +136,11 @@ export async function rawPublish(queue: string, payloads: readonly Buffer[]): Pr
 }
 
 /** Read one message off a queue without acking side effects (removes it). */
-export async function takeMessage(queue: string): Promise<{ content: unknown; headers: Record<string, unknown>; properties: Record<string, unknown> } | null> {
+export async function takeMessage(queue: string): Promise<{
+  content: unknown
+  headers: Record<string, unknown>
+  properties: Record<string, unknown>
+} | null> {
   return withRawChannel(async (ch) => {
     const raw = await ch.get(queue, { noAck: true })
     if (raw === false) return null
@@ -149,10 +174,14 @@ export async function forceCloseConnection(connectionName: string): Promise<void
   let target: string | undefined
   const deadline = Date.now() + 30_000
   while (target === undefined) {
-    if (Date.now() > deadline) throw new Error(`connection "${connectionName}" not visible in the management API`)
+    if (Date.now() > deadline)
+      throw new Error(`connection "${connectionName}" not visible in the management API`)
     const res = await fetch(`${base}/api/connections`, { headers: { authorization: auth } })
     assert.ok(res.ok, `management API reachable (${res.status})`)
-    const connections = (await res.json()) as { name: string; client_properties?: { connection_name?: string } }[]
+    const connections = (await res.json()) as {
+      name: string
+      client_properties?: { connection_name?: string }
+    }[]
     target = connections.find((c) => c.client_properties?.connection_name === connectionName)?.name
     if (target === undefined) await sleep(1000)
   }

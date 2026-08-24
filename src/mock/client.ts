@@ -21,8 +21,17 @@ import {
   wireName,
 } from '../defs/define.js'
 import { DEFAULT_RETRY, effectiveDelays } from '../defs/retry.js'
-import { encodeMessage, stringifyBody, validateRoutingKey, type PublishOptions } from '../core/codec.js'
-import { runConsumePipeline, type DeliveryContext, type PipelineOutcome } from '../consume/pipeline.js'
+import {
+  encodeMessage,
+  stringifyBody,
+  validateRoutingKey,
+  type PublishOptions,
+} from '../core/codec.js'
+import {
+  runConsumePipeline,
+  type DeliveryContext,
+  type PipelineOutcome,
+} from '../consume/pipeline.js'
 import {
   validateConsumeOptions,
   validateHandler,
@@ -150,7 +159,8 @@ class ConeyMockClient implements ConeyMock {
   async deliver<T>(def: QueueDef<T>, body: T, options?: DeliverOptions): Promise<DeliveryOutcome> {
     const wire = wireName(this.prefix, def.name)
     const candidates = this.registrations.filter(
-      (registration): registration is QueueRegistration => registration.kind === 'queue' && registration.wire === wire && registration.active,
+      (registration): registration is QueueRegistration =>
+        registration.kind === 'queue' && registration.wire === wire && registration.active,
     )
     if (candidates.length === 0) {
       throw new ConeyConfigError(`no consumer is registered for the queue "${def.name}"`)
@@ -170,7 +180,12 @@ class ConeyMockClient implements ConeyMock {
     })
   }
 
-  async deliverTopic<T>(def: TopicDef<T>, routingKey: string, body: T, options?: DeliverOptions): Promise<readonly DeliveryOutcome[]> {
+  async deliverTopic<T>(
+    def: TopicDef<T>,
+    routingKey: string,
+    body: T,
+    options?: DeliverOptions,
+  ): Promise<readonly DeliveryOutcome[]> {
     validateRoutingKey(routingKey)
     const topicWire = wireName(this.prefix, def.name)
     const outcomes: DeliveryOutcome[] = []
@@ -182,7 +197,8 @@ class ConeyMockClient implements ConeyMock {
       if (!registration.active) continue
       if (registration.kind === 'topic') {
         if (registration.wire !== topicWire) continue
-        if (!registration.patterns.some((pattern) => matchTopicPattern(pattern, routingKey))) continue
+        if (!registration.patterns.some((pattern) => matchTopicPattern(pattern, routingKey)))
+          continue
         // Subscriptions carry the topic's payload type: gate with the topic's schema.
         const outcome = await this.runMockPipeline({
           schema: registration.def.schema,
@@ -232,7 +248,9 @@ class ConeyMockClient implements ConeyMock {
     const existing = this.defs.get(wire)
     if (existing !== undefined) {
       if (!defsEqual(existing, def)) {
-        throw new ConeyConfigError(`two different defs share the name "${def.name}" — reuse one def per name`)
+        throw new ConeyConfigError(
+          `two different defs share the name "${def.name}" — reuse one def per name`,
+        )
       }
       return wire
     }
@@ -249,7 +267,15 @@ class ConeyMockClient implements ConeyMock {
       name: wire,
       publish: async (body, options) => {
         this.ensureNotClosed()
-        this.recordPublish({ kind: 'queue', def, wire, routingKey: wire, typeProp: def.name, body, options })
+        this.recordPublish({
+          kind: 'queue',
+          def,
+          wire,
+          routingKey: wire,
+          typeProp: def.name,
+          body,
+          options,
+        })
       },
       consume: async (handler, options) => {
         this.ensureNotClosed()
@@ -286,7 +312,15 @@ class ConeyMockClient implements ConeyMock {
       publish: async (routingKey, body, options) => {
         this.ensureNotClosed()
         validateRoutingKey(routingKey)
-        this.recordPublish({ kind: 'topic', def, wire, routingKey, typeProp: routingKey, body, options })
+        this.recordPublish({
+          kind: 'topic',
+          def,
+          wire,
+          routingKey,
+          typeProp: routingKey,
+          body,
+          options,
+        })
       },
       subscribe: async (patterns, handler, options) => {
         this.ensureNotClosed()
@@ -317,7 +351,13 @@ class ConeyMockClient implements ConeyMock {
     options: PublishOptions | undefined
   }): void {
     const body = parseBody(args.def, args.body)
-    encodeMessage({ body, type: args.typeProp, appId: this.name, options: args.options, now: new Date() })
+    encodeMessage({
+      body,
+      type: args.typeProp,
+      appId: this.name,
+      options: args.options,
+      now: new Date(),
+    })
     this.records.push(
       Object.freeze({
         target: Object.freeze({ kind: args.kind, name: args.wire }),
@@ -393,7 +433,12 @@ function toDeliveryOutcome(outcome: PipelineOutcome): DeliveryOutcome {
     case 'ack':
       return Object.freeze({ outcome: 'ack' })
     case 'retry':
-      return Object.freeze({ outcome: 'retry', attempt: outcome.attempt, delayMs: outcome.delayMs, error: outcome.error })
+      return Object.freeze({
+        outcome: 'retry',
+        attempt: outcome.attempt,
+        delayMs: outcome.delayMs,
+        error: outcome.error,
+      })
     case 'dead':
       return Object.freeze({
         outcome: 'dead',
@@ -405,6 +450,9 @@ function toDeliveryOutcome(outcome: PipelineOutcome): DeliveryOutcome {
   }
 }
 
-export function createConeyMock(options?: { readonly prefix?: string; readonly name?: string }): ConeyMock {
+export function createConeyMock(options?: {
+  readonly prefix?: string
+  readonly name?: string
+}): ConeyMock {
   return new ConeyMockClient(options)
 }

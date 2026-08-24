@@ -97,7 +97,10 @@ export class ConnectionManager {
   }
 
   private async runInitialConnect(): Promise<void> {
-    const userClientProperties = (this.socketOptions?.['clientProperties'] ?? {}) as Record<string, unknown>
+    const userClientProperties = (this.socketOptions?.['clientProperties'] ?? {}) as Record<
+      string,
+      unknown
+    >
     let attempt = 0
     for (;;) {
       if (this.closeRequested) return
@@ -108,7 +111,10 @@ export class ConnectionManager {
         // management-API force-close used in tests) off this throwaway connection.
         const probe = await amqplib.connect(this.url, {
           ...this.socketOptions,
-          clientProperties: { connection_name: `${this.connectionName}:probe`, ...userClientProperties },
+          clientProperties: {
+            connection_name: `${this.connectionName}:probe`,
+            ...userClientProperties,
+          },
         })
         await probe.close().catch(() => {})
         if (this.closeRequested) return
@@ -138,7 +144,10 @@ export class ConnectionManager {
 
   /** The recovery backoff formula (delay, factor, jitter) — resolves early on close. */
   private backoffSleep(attempt: number): Promise<void> {
-    const base = Math.min(this.policy.maxDelayMs, this.policy.initialDelayMs * this.policy.factor ** (attempt - 1))
+    const base = Math.min(
+      this.policy.maxDelayMs,
+      this.policy.initialDelayMs * this.policy.factor ** (attempt - 1),
+    )
     const jitterPart = base * this.policy.jitter
     const offset = jitterPart > 0 ? Math.random() * jitterPart * 2 - jitterPart : 0
     const delay = Math.max(0, Math.round(base + offset))
@@ -161,12 +170,16 @@ export class ConnectionManager {
       return Promise.reject(new ConeyClosedError('the client is closing or closed'))
     }
     if (this.phaseValue === 'closed') {
-      return Promise.reject(new ConeyUnavailableError('the reconnect policy gave up; the client is closed'))
+      return Promise.reject(
+        new ConeyUnavailableError('the reconnect policy gave up; the client is closed'),
+      )
     }
     if (this.phaseValue === 'open') return Promise.resolve()
     this.start()
     if (timeoutMs === 0) {
-      return Promise.reject(new ConeyUnavailableError('not connected, and the allowed wait is 0 ms'))
+      return Promise.reject(
+        new ConeyUnavailableError('not connected, and the allowed wait is 0 ms'),
+      )
     }
     return new Promise<void>((resolve, reject) => {
       let timer: NodeJS.Timeout | undefined
@@ -184,7 +197,11 @@ export class ConnectionManager {
         timer = setTimeout(() => {
           const index = this.openWaiters.indexOf(waiter)
           if (index !== -1) this.openWaiters.splice(index, 1)
-          reject(new ConeyUnavailableError(`no broker connection within ${timeoutMs} ms (the reconnect loop keeps running)`))
+          reject(
+            new ConeyUnavailableError(
+              `no broker connection within ${timeoutMs} ms (the reconnect loop keeps running)`,
+            ),
+          )
         }, timeoutMs)
       }
       this.openWaiters.push(waiter)
@@ -284,45 +301,87 @@ export class ConnectionManager {
   private handleInitialFailure(err: unknown): void {
     if (this.closeRequested) return // close() during the initial connect rejects the promise; expected
     this.phaseValue = 'closed'
-    this.emit({ event: 'coney.reconnect_exhausted', level: 'error', attempts: this.policy.maxAttempts })
+    this.emit({
+      event: 'coney.reconnect_exhausted',
+      level: 'error',
+      attempts: this.policy.maxAttempts,
+    })
     this.rejectOpenWaiters(
-      new ConeyUnavailableError(`could not connect to ${this.redactedUrl} (reconnect policy exhausted)`, { cause: err }),
+      new ConeyUnavailableError(
+        `could not connect to ${this.redactedUrl} (reconnect policy exhausted)`,
+        { cause: err },
+      ),
     )
   }
 
   private attachRecoveringListeners(recovering: RecoveringChannelModel): void {
-    recovering.on('disconnect', this.safe((err: Error) => {
-      if (this.closeRequested) return
-      this.phaseValue = 'reconnecting'
-      this.disconnectedAt = Date.now()
-      this.emit({ event: 'coney.disconnected', level: 'warn', reason: redactText(err.message) })
-      this.onDisconnect(new ConeyUnavailableError('the broker connection was lost', { cause: err }))
-    }))
-    recovering.on('connect', this.safe(() => {
-      // The very first `connect` fired before coney had the emitter; every one seen
-      // here is a RE-connect.
-      if (this.closeRequested) return
-      this.phaseValue = 'open'
-      this.emit({ event: 'coney.reconnected', level: 'info', downtimeMs: Date.now() - this.disconnectedAt })
-      this.resolveOpenWaiters()
-    }))
-    recovering.on('reconnect-scheduled', this.safe((info: { attempt: number; delay: number }) => {
-      if (this.closeRequested) return
-      this.emit({ event: 'coney.reconnecting', level: 'warn', attempt: info.attempt, delayMs: info.delay })
-    }))
-    recovering.on('reconnect-failed', this.safe((err: Error) => {
-      // maxAttempts exhausted: terminal.
-      if (this.closeRequested) return
-      this.phaseValue = 'closed'
-      this.emit({ event: 'coney.reconnect_exhausted', level: 'error', attempts: this.policy.maxAttempts })
-      this.rejectOpenWaiters(new ConeyUnavailableError('the reconnect policy gave up', { cause: err }))
-    }))
-    recovering.on('error', this.safe(() => {
-      // Followed by `disconnect`; an unhandled `error` event would crash the process.
-    }))
-    recovering.on('handler-error', this.safe((err: Error) => {
-      process.emitWarning(err)
-    }))
+    recovering.on(
+      'disconnect',
+      this.safe((err: Error) => {
+        if (this.closeRequested) return
+        this.phaseValue = 'reconnecting'
+        this.disconnectedAt = Date.now()
+        this.emit({ event: 'coney.disconnected', level: 'warn', reason: redactText(err.message) })
+        this.onDisconnect(
+          new ConeyUnavailableError('the broker connection was lost', { cause: err }),
+        )
+      }),
+    )
+    recovering.on(
+      'connect',
+      this.safe(() => {
+        // The very first `connect` fired before coney had the emitter; every one seen
+        // here is a RE-connect.
+        if (this.closeRequested) return
+        this.phaseValue = 'open'
+        this.emit({
+          event: 'coney.reconnected',
+          level: 'info',
+          downtimeMs: Date.now() - this.disconnectedAt,
+        })
+        this.resolveOpenWaiters()
+      }),
+    )
+    recovering.on(
+      'reconnect-scheduled',
+      this.safe((info: { attempt: number; delay: number }) => {
+        if (this.closeRequested) return
+        this.emit({
+          event: 'coney.reconnecting',
+          level: 'warn',
+          attempt: info.attempt,
+          delayMs: info.delay,
+        })
+      }),
+    )
+    recovering.on(
+      'reconnect-failed',
+      this.safe((err: Error) => {
+        // maxAttempts exhausted: terminal.
+        if (this.closeRequested) return
+        this.phaseValue = 'closed'
+        this.emit({
+          event: 'coney.reconnect_exhausted',
+          level: 'error',
+          attempts: this.policy.maxAttempts,
+        })
+        this.rejectOpenWaiters(
+          new ConeyUnavailableError('the reconnect policy gave up', { cause: err }),
+        )
+      }),
+    )
+    recovering.on(
+      'error',
+      this.safe(() => {
+        // Followed by `disconnect`; an unhandled `error` event would crash the process.
+      }),
+    )
+    recovering.on(
+      'handler-error',
+      this.safe((err: Error) => {
+        process.emitWarning(err)
+      }),
+    )
   }
 
   private async requireRecovering(): Promise<RecoveringChannelModel> {
@@ -339,7 +398,8 @@ export class ConnectionManager {
     try {
       return await promise
     } catch (err) {
-      if (this.closeRequested) throw new ConeyClosedError('the client is closing or closed', { cause: err })
+      if (this.closeRequested)
+        throw new ConeyClosedError('the client is closing or closed', { cause: err })
       throw new ConeyUnavailableError('the broker connection is not available', { cause: err })
     }
   }

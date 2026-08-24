@@ -6,7 +6,9 @@ import { ConeyConfigError } from '../src/core/errors.js'
 const throwsConfig = (fn: () => unknown, match?: RegExp) => {
   assert.throws(
     fn,
-    (err: unknown) => err instanceof ConeyConfigError && (match === undefined || match.test((err as Error).message)),
+    (err: unknown) =>
+      err instanceof ConeyConfigError &&
+      (match === undefined || match.test((err as Error).message)),
   )
 }
 
@@ -19,9 +21,18 @@ describe('validateName / wireName', () => {
   it('rejects empty, whitespace, control characters and oversized names', () => {
     throwsConfig(() => validateName('', 'queue name'), /non-empty/)
     throwsConfig(() => validateName('has space', 'queue name'), /whitespace/)
-    throwsConfig(() => validateName('tab' + String.fromCharCode(9) + 'x', 'queue name'), /whitespace or control/)
-    throwsConfig(() => validateName('nul' + String.fromCharCode(0) + 'x', 'queue name'), /whitespace or control/)
-    throwsConfig(() => validateName('del' + String.fromCharCode(127) + 'x', 'queue name'), /whitespace or control/)
+    throwsConfig(
+      () => validateName('tab' + String.fromCharCode(9) + 'x', 'queue name'),
+      /whitespace or control/,
+    )
+    throwsConfig(
+      () => validateName('nul' + String.fromCharCode(0) + 'x', 'queue name'),
+      /whitespace or control/,
+    )
+    throwsConfig(
+      () => validateName('del' + String.fromCharCode(127) + 'x', 'queue name'),
+      /whitespace or control/,
+    )
     throwsConfig(() => validateName('x'.repeat(201), 'queue name'), /200 bytes/)
     // 67 three-byte chars = 201 bytes but only 67 JS chars: the BYTE length counts
     throwsConfig(() => validateName('ế'.repeat(67), 'queue name'), /200 bytes/)
@@ -65,13 +76,17 @@ describe('defineQueue', () => {
     throwsConfig(() => defineQueue({ name: 'jobs', retry: { delays: [0] } }), /positive integers/)
     throwsConfig(() => defineQueue({ name: 'jobs', retry: { delays: [-5] } }), /positive integers/)
     throwsConfig(() => defineQueue({ name: 'jobs', retry: { delays: [1.5] } }), /positive integers/)
-    throwsConfig(() => defineQueue({ name: 'jobs', retry: { delays: [Number.NaN] } }), /positive integers/)
+    throwsConfig(
+      () => defineQueue({ name: 'jobs', retry: { delays: [Number.NaN] } }),
+      /positive integers/,
+    )
   })
 
   it('accepts retry: false and an empty ladder', () => {
     assert.equal(defineQueue({ name: 'jobs', retry: false }).retry, false)
     assert.deepEqual(
-      (defineQueue({ name: 'jobs', retry: { delays: [] } }).retry as { delays: readonly number[] }).delays,
+      (defineQueue({ name: 'jobs', retry: { delays: [] } }).retry as { delays: readonly number[] })
+        .delays,
       [],
     )
   })
@@ -81,11 +96,21 @@ describe('defineQueue', () => {
     const bound = defineQueue({ name: 'notify', bindings: [{ topic, patterns: ['task.*'] }] })
     assert.equal(bound.bindings?.[0]?.topic, topic)
     throwsConfig(
-      () => defineQueue({ name: 'notify', bindings: [{ topic: { name: 'x' } as never, patterns: ['a'] }] }),
+      () =>
+        defineQueue({
+          name: 'notify',
+          bindings: [{ topic: { name: 'x' } as never, patterns: ['a'] }],
+        }),
       /defineTopic/,
     )
-    throwsConfig(() => defineQueue({ name: 'notify', bindings: [{ topic, patterns: [] }] }), /at least one pattern/)
-    throwsConfig(() => defineQueue({ name: 'notify', bindings: [{ topic, patterns: [''] }] }), /empty pattern/)
+    throwsConfig(
+      () => defineQueue({ name: 'notify', bindings: [{ topic, patterns: [] }] }),
+      /at least one pattern/,
+    )
+    throwsConfig(
+      () => defineQueue({ name: 'notify', bindings: [{ topic, patterns: [''] }] }),
+      /empty pattern/,
+    )
   })
 })
 

@@ -45,7 +45,12 @@ export class Publisher {
   }
 
   /** Publish and resolve only on the broker's confirm. Assumes the caller already waited for `open`. */
-  async send(args: { exchange: string; routingKey: string; encoded: EncodedMessage; timeoutMs: number }): Promise<void> {
+  async send(args: {
+    exchange: string
+    routingKey: string
+    encoded: EncodedMessage
+    timeoutMs: number
+  }): Promise<void> {
     const promise = this.doSend(args)
     this.inFlight.add(promise)
     try {
@@ -62,13 +67,20 @@ export class Publisher {
     }
   }
 
-  private async doSend(args: { exchange: string; routingKey: string; encoded: EncodedMessage; timeoutMs: number }): Promise<void> {
+  private async doSend(args: {
+    exchange: string
+    routingKey: string
+    encoded: EncodedMessage
+    timeoutMs: number
+  }): Promise<void> {
     let channel = this.channel
     if (channel === null) {
       // The setup-created channel is gone (solo channel death, or a disconnect right
       // after the open wait) — recreate it within the same bounded-wait budget.
       if (args.timeoutMs === 0) {
-        throw new ConeyUnavailableError('the publish channel is not available, and the allowed wait is 0 ms')
+        throw new ConeyUnavailableError(
+          'the publish channel is not available, and the allowed wait is 0 ms',
+        )
       }
       channel = await raceTimeout(
         this.ensureChannel(),
@@ -90,16 +102,29 @@ export class Publisher {
       this.pending.add(entry)
       let keepWriting: boolean
       try {
-        keepWriting = target.publish(args.exchange, args.routingKey, args.encoded.content, args.encoded.properties, (err) => {
-          // Broker confirm: ack (err == null) or nack. A settled promise ignores
-          // the late callback amqplib may fire after a disconnect rejection.
-          this.pending.delete(entry)
-          if (err == null) resolve()
-          else reject(new ConeyPublishError(`the broker rejected the publish to "${args.routingKey}"`, { cause: err }))
-        })
+        keepWriting = target.publish(
+          args.exchange,
+          args.routingKey,
+          args.encoded.content,
+          args.encoded.properties,
+          (err) => {
+            // Broker confirm: ack (err == null) or nack. A settled promise ignores
+            // the late callback amqplib may fire after a disconnect rejection.
+            this.pending.delete(entry)
+            if (err == null) resolve()
+            else
+              reject(
+                new ConeyPublishError(`the broker rejected the publish to "${args.routingKey}"`, {
+                  cause: err,
+                }),
+              )
+          },
+        )
       } catch (err) {
         this.pending.delete(entry)
-        reject(new ConeyUnavailableError('the publish channel failed while writing', { cause: err }))
+        reject(
+          new ConeyUnavailableError('the publish channel failed while writing', { cause: err }),
+        )
         return
       }
       if (!keepWriting && this.drainGate === null) {
@@ -159,7 +184,9 @@ export class Publisher {
       // A solo channel death (no disconnect) must also fail outstanding confirms;
       // after a connection loss this is a harmless double reject. Scoped to the
       // CURRENT channel: every pending confirm was written on it.
-      this.rejectPending(new ConeyUnavailableError('the publish channel closed before the broker confirmed'))
+      this.rejectPending(
+        new ConeyUnavailableError('the publish channel closed before the broker confirmed'),
+      )
     })
     this.channel = channel
   }

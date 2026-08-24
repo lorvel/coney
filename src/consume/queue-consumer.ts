@@ -10,7 +10,12 @@ import { reasonOf, type LogEmitter } from '../core/log.js'
 import type { ChannelFactory } from '../connection/manager.js'
 import type { QueueDef } from '../defs/define.js'
 import type { ConsumeOptions, Handler } from './types.js'
-import { runConsumePipeline, truncateReason, type DeliveryContext, type PipelineOutcome } from './pipeline.js'
+import {
+  runConsumePipeline,
+  truncateReason,
+  type DeliveryContext,
+  type PipelineOutcome,
+} from './pipeline.js'
 import { confirmPublish, contextOf, republishOptions } from './delivery.js'
 import { BaseConsumer } from './runtime.js'
 
@@ -41,7 +46,9 @@ export class QueueConsumer<T> extends BaseConsumer {
       // Adopt BEFORE consume: deliveries may arrive the moment the broker sees
       // the consumer (a failed consume un-adopts through the close listener).
       this.adoptChannel(channel)
-      const ok = await channel.consume(this.args.wire, (raw) => this.onDelivery(channel, raw), { consumerTag: this.tag })
+      const ok = await channel.consume(this.args.wire, (raw) => this.onDelivery(channel, raw), {
+        consumerTag: this.tag,
+      })
       this.consumerTag = ok.consumerTag
       this.emit({
         event: 'coney.consumer_started',
@@ -60,22 +67,38 @@ export class QueueConsumer<T> extends BaseConsumer {
     const { channel } = this
     this.channel = null
     this.consumerTag = null
-    this.emit({ event: 'coney.consumer_stopped', level: 'info', queue: this.args.wire, consumerTag: this.tag })
+    this.emit({
+      event: 'coney.consumer_stopped',
+      level: 'info',
+      queue: this.args.wire,
+      consumerTag: this.tag,
+    })
     if (channel !== null) void channel.close().catch(() => {})
   }
 
-  protected async processDelivery(channel: Channel | ConfirmChannel, raw: ConsumeMessage): Promise<void> {
+  protected async processDelivery(
+    channel: Channel | ConfirmChannel,
+    raw: ConsumeMessage,
+  ): Promise<void> {
     const context = contextOf(raw)
     const outcome = await this.runDelivery(raw, context)
     await this.settleOutcome(channel as ConfirmChannel, raw, context, outcome)
   }
 
-  private async runDelivery(raw: ConsumeMessage, context: DeliveryContext): Promise<PipelineOutcome> {
+  private async runDelivery(
+    raw: ConsumeMessage,
+    context: DeliveryContext,
+  ): Promise<PipelineOutcome> {
     let body: unknown
     try {
       body = decodeJson(raw.content)
     } catch (err) {
-      return { kind: 'dead', attempt: context.attempt, reason: truncateReason(`decode: ${reasonOf(err)}`), error: err }
+      return {
+        kind: 'dead',
+        attempt: context.attempt,
+        reason: truncateReason(`decode: ${reasonOf(err)}`),
+        error: err,
+      }
     }
     const controller = new AbortController()
     this.controllers.add(controller)
@@ -89,9 +112,21 @@ export class QueueConsumer<T> extends BaseConsumer {
         timeoutMs: this.args.options?.timeoutMs,
         delays: this.args.delays,
         onTimeout: (timeoutMs) =>
-          this.emit({ event: 'coney.handler_timeout', level: 'warn', queue: this.args.wire, messageId: context.id, timeoutMs }),
+          this.emit({
+            event: 'coney.handler_timeout',
+            level: 'warn',
+            queue: this.args.wire,
+            messageId: context.id,
+            timeoutMs,
+          }),
         onLate: (late) =>
-          this.emit({ event: 'coney.handler_late', level: 'warn', queue: this.args.wire, messageId: context.id, outcome: late }),
+          this.emit({
+            event: 'coney.handler_late',
+            level: 'warn',
+            queue: this.args.wire,
+            messageId: context.id,
+            outcome: late,
+          }),
       })
     } finally {
       this.controllers.delete(controller)
@@ -169,7 +204,12 @@ export class QueueConsumer<T> extends BaseConsumer {
    */
   private async publishInternal(
     channel: ConfirmChannel,
-    args: { exchange: string; routingKey: string; content: Buffer; options: Record<string, unknown> },
+    args: {
+      exchange: string
+      routingKey: string
+      content: Buffer
+      options: Record<string, unknown>
+    },
   ): Promise<boolean> {
     try {
       await confirmPublish(channel, args)

@@ -16,7 +16,9 @@ for (;;) {
     process.exit(0)
   } catch (err) {
     if (Date.now() > deadline) {
-      console.error(`broker not reachable within 120s: ${err instanceof Error ? err.message : String(err)}`)
+      console.error(
+        `broker not reachable within 120s: ${err instanceof Error ? err.message : String(err)}`,
+      )
       process.exit(1)
     }
     await new Promise((resolve) => setTimeout(resolve, 2000))

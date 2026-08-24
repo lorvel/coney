@@ -54,24 +54,36 @@ export function toRecoveryOptions(policy: ReconnectPolicy): RecoveryOptionsMappe
  * Note the interplay: overriding `initialDelayMs` above the default `maxDelayMs`
  * (30 000) without also raising `maxDelayMs` is rejected by validation.
  */
-export function resolveReconnectPolicy(partial: Partial<ReconnectPolicy> | undefined): ReconnectPolicy {
+export function resolveReconnectPolicy(
+  partial: Partial<ReconnectPolicy> | undefined,
+): ReconnectPolicy {
   const policy: ReconnectPolicy = { ...DEFAULT_RECONNECT_POLICY, ...partial }
   validateReconnectPolicy(policy)
   return policy
 }
 
 export function validateReconnectPolicy(policy: ReconnectPolicy): void {
-  const isNonNegative = (value: number): boolean => typeof value === 'number' && !Number.isNaN(value) && value >= 0
+  const isNonNegative = (value: number): boolean =>
+    typeof value === 'number' && !Number.isNaN(value) && value >= 0
   if (!isNonNegative(policy.initialDelayMs) || !Number.isFinite(policy.initialDelayMs)) {
     throw new ConeyConfigError('reconnect.initialDelayMs must be a finite number >= 0')
   }
-  if (!isNonNegative(policy.maxDelayMs) || !Number.isFinite(policy.maxDelayMs) || policy.maxDelayMs < policy.initialDelayMs) {
+  if (
+    !isNonNegative(policy.maxDelayMs) ||
+    !Number.isFinite(policy.maxDelayMs) ||
+    policy.maxDelayMs < policy.initialDelayMs
+  ) {
     throw new ConeyConfigError('reconnect.maxDelayMs must be a finite number >= initialDelayMs')
   }
   if (typeof policy.factor !== 'number' || Number.isNaN(policy.factor) || policy.factor < 1) {
     throw new ConeyConfigError('reconnect.factor must be a number >= 1')
   }
-  if (typeof policy.jitter !== 'number' || Number.isNaN(policy.jitter) || policy.jitter < 0 || policy.jitter > 1) {
+  if (
+    typeof policy.jitter !== 'number' ||
+    Number.isNaN(policy.jitter) ||
+    policy.jitter < 0 ||
+    policy.jitter > 1
+  ) {
     throw new ConeyConfigError('reconnect.jitter must be a number between 0 and 1')
   }
   if (!isNonNegative(policy.maxAttempts)) {

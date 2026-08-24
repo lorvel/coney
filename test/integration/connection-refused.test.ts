@@ -31,8 +31,15 @@ test('maxAttempts exhaustion: open() rejects, the client is closed, publishes fa
     log: collector.log,
   })
   await assert.rejects(mq.open(), ConeyUnavailableError)
-  await waitFor(() => collector.names().includes('coney.reconnect_exhausted'), 'exhausted event', 5000)
+  await waitFor(
+    () => collector.names().includes('coney.reconnect_exhausted'),
+    'exhausted event',
+    5000,
+  )
   assert.equal(mq.state, 'closed')
-  await assert.rejects(mq.queue(defineQueue({ name: 'q' })).publish({ n: 1 }), ConeyUnavailableError)
+  await assert.rejects(
+    mq.queue(defineQueue({ name: 'q' })).publish({ n: 1 }),
+    ConeyUnavailableError,
+  )
   await mq.close() // still idempotent and safe
 })

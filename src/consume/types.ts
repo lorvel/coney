@@ -72,14 +72,20 @@ export interface Subscription {
 }
 
 /** Shared by `consume()`, `subscribe()` and the mock (the option shapes are identical). */
-export function validateConsumeOptions(options: ConsumeOptions | SubscribeOptions | undefined): void {
+export function validateConsumeOptions(
+  options: ConsumeOptions | SubscribeOptions | undefined,
+): void {
   if (options === undefined) return
-  if (options.prefetch !== undefined && (!Number.isInteger(options.prefetch) || options.prefetch < 1)) {
+  if (
+    options.prefetch !== undefined &&
+    (!Number.isInteger(options.prefetch) || options.prefetch < 1)
+  ) {
     throw new ConeyConfigError('prefetch must be an integer >= 1')
   }
   // "No deadline" is spelled by OMITTING timeoutMs — Infinity would be clamped
   // to 1 ms by setTimeout and abort every handler immediately.
-  if (options.timeoutMs !== undefined) validateDurationMs(options.timeoutMs, 'timeoutMs', { positive: true })
+  if (options.timeoutMs !== undefined)
+    validateDurationMs(options.timeoutMs, 'timeoutMs', { positive: true })
 }
 
 /** Shared by the real client and the mock. */
@@ -90,7 +96,9 @@ export function validateHandler(handler: unknown, verb: 'consume' | 'subscribe')
 }
 
 /** Shared by the real client and the mock. */
-export function validateSubscribePatterns(patterns: unknown): asserts patterns is readonly string[] {
+export function validateSubscribePatterns(
+  patterns: unknown,
+): asserts patterns is readonly string[] {
   if (!Array.isArray(patterns) || patterns.length === 0) {
     throw new ConeyConfigError('subscribe() needs at least one binding pattern')
   }

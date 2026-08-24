@@ -10,17 +10,68 @@ export type ConeyLogEvent =
   | { event: 'coney.reconnected'; level: 'info'; downtimeMs: number }
   | { event: 'coney.reconnect_exhausted'; level: 'error'; attempts: number }
   | { event: 'coney.topology_asserted'; level: 'debug'; queues: string[]; exchanges: string[] }
-  | { event: 'coney.topology_failed'; level: 'error'; target: string; reason: string; amqpCode?: number }
-  | { event: 'coney.consumer_started'; level: 'info'; queue: string; consumerTag: string; prefetch: number }
+  | {
+      event: 'coney.topology_failed'
+      level: 'error'
+      target: string
+      reason: string
+      amqpCode?: number
+    }
+  | {
+      event: 'coney.consumer_started'
+      level: 'info'
+      queue: string
+      consumerTag: string
+      prefetch: number
+    }
   | { event: 'coney.consumer_stopped'; level: 'info'; queue: string; consumerTag: string }
   | { event: 'coney.subscription_reset'; level: 'warn'; topic: string; patterns: string[] }
-  | { event: 'coney.subscription_error'; level: 'error'; topic: string; messageId: string; reason: string }
-  | { event: 'coney.message_retried'; level: 'warn'; queue: string; messageId: string; attempt: number; delayMs: number; reason: string }
-  | { event: 'coney.message_dead'; level: 'error'; queue: string; messageId: string; attempt: number; reason: string }
-  | { event: 'coney.handler_timeout'; level: 'warn'; queue: string; messageId: string; timeoutMs: number }
-  | { event: 'coney.handler_late'; level: 'warn'; queue: string; messageId: string; outcome: 'resolved' | 'rejected' }
+  | {
+      event: 'coney.subscription_error'
+      level: 'error'
+      topic: string
+      messageId: string
+      reason: string
+    }
+  | {
+      event: 'coney.message_retried'
+      level: 'warn'
+      queue: string
+      messageId: string
+      attempt: number
+      delayMs: number
+      reason: string
+    }
+  | {
+      event: 'coney.message_dead'
+      level: 'error'
+      queue: string
+      messageId: string
+      attempt: number
+      reason: string
+    }
+  | {
+      event: 'coney.handler_timeout'
+      level: 'warn'
+      queue: string
+      messageId: string
+      timeoutMs: number
+    }
+  | {
+      event: 'coney.handler_late'
+      level: 'warn'
+      queue: string
+      messageId: string
+      outcome: 'resolved' | 'rejected'
+    }
   | { event: 'coney.ack_failed'; level: 'warn'; queue: string; messageId: string; reason: string }
-  | { event: 'coney.publish_failed'; level: 'warn'; target: string; routingKey: string; reason: string }
+  | {
+      event: 'coney.publish_failed'
+      level: 'warn'
+      target: string
+      routingKey: string
+      reason: string
+    }
   | { event: 'coney.dead_replayed'; level: 'info'; queue: string; replayed: number }
   | { event: 'coney.closing'; level: 'info'; drainMs: number; inFlight: number }
   | { event: 'coney.closed'; level: 'info'; drained: boolean; inFlight: number }

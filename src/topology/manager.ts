@@ -9,7 +9,12 @@ import { ConeyConfigError, ConeyTopologyError, topologyError } from '../core/err
 import { reasonOf, type LogEmitter } from '../core/log.js'
 import type { AnyDef, QueueDef } from '../defs/define.js'
 import { defsEqual, wireName } from '../defs/define.js'
-import { bucketLogicalName, durationLabel, effectiveDelays, type RetryPolicy } from '../defs/retry.js'
+import {
+  bucketLogicalName,
+  durationLabel,
+  effectiveDelays,
+  type RetryPolicy,
+} from '../defs/retry.js'
 import type { ChannelFactory, ConnectionManager } from '../connection/manager.js'
 
 interface RegisteredDef {
@@ -46,7 +51,9 @@ export class TopologyManager {
     const existing = this.defs.get(wire)
     if (existing !== undefined) {
       if (!defsEqual(existing.def, def)) {
-        throw new ConeyConfigError(`two different defs share the name "${def.name}" — reuse one def per name`)
+        throw new ConeyConfigError(
+          `two different defs share the name "${def.name}" — reuse one def per name`,
+        )
       }
       return wire
     }

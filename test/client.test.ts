@@ -10,7 +10,10 @@ const makeClient = () => createConey({ url: URL_OK, prefix: 'lorvel', name: 'tes
 
 describe('createConey validation', () => {
   const throwsConfig = (fn: () => unknown, match: RegExp) => {
-    assert.throws(fn, (err: unknown) => err instanceof ConeyConfigError && match.test((err as Error).message))
+    assert.throws(
+      fn,
+      (err: unknown) => err instanceof ConeyConfigError && match.test((err as Error).message),
+    )
   }
 
   it('rejects bad urls synchronously', () => {
@@ -25,7 +28,10 @@ describe('createConey validation', () => {
     throwsConfig(() => createConey({ url: URL_OK, name: '' }), /name/)
     throwsConfig(() => createConey({ url: URL_OK, reconnect: { factor: 0.5 } }), /factor/)
     throwsConfig(() => createConey({ url: URL_OK, reconnect: { jitter: 2 } }), /jitter/)
-    throwsConfig(() => createConey({ url: URL_OK, reconnect: { initialDelayMs: -1 } }), /initialDelayMs/)
+    throwsConfig(
+      () => createConey({ url: URL_OK, reconnect: { initialDelayMs: -1 } }),
+      /initialDelayMs/,
+    )
     throwsConfig(() => createConey({ url: URL_OK, reconnect: { maxDelayMs: 1 } }), /maxDelayMs/) // < initialDelayMs default
     throwsConfig(() => createConey({ url: URL_OK, publishTimeoutMs: -1 }), /publishTimeoutMs/)
     throwsConfig(() => createConey({ url: URL_OK, retry: { delays: [0] } }), /positive integers/)
@@ -38,7 +44,10 @@ describe('createConey validation', () => {
     await assert.rejects(mq.open({ timeoutMs: Infinity }), ConeyConfigError)
     await assert.rejects(mq.open({ timeoutMs: -5 }), ConeyConfigError)
     const jobs = mq.queue(defineQueue({ name: 'jobs' }))
-    await assert.rejects(jobs.consume(() => {}, { timeoutMs: Infinity }), ConeyConfigError)
+    await assert.rejects(
+      jobs.consume(() => {}, { timeoutMs: Infinity }),
+      ConeyConfigError,
+    )
     await assert.rejects(jobs.publish({ x: 1 }, { timeoutMs: Infinity }), ConeyConfigError)
     await assert.rejects(mq.close({ drainMs: Infinity }), ConeyConfigError)
     assert.equal(mq.state, 'idle') // every rejection happened before any I/O
@@ -85,7 +94,8 @@ describe('handles', () => {
     mq.queue(defineQueue({ name: 'jobs', retry: { delays: [10] } }))
     assert.throws(
       () => mq.queue(defineQueue({ name: 'jobs', retry: { delays: [10, 20] } })),
-      (err: unknown) => err instanceof ConeyConfigError && /share the name/.test((err as Error).message),
+      (err: unknown) =>
+        err instanceof ConeyConfigError && /share the name/.test((err as Error).message),
     )
     assert.throws(() => mq.queue(defineTopic({ name: 'events' }) as never), /defineQueue/)
     assert.throws(() => mq.topic(defineQueue({ name: 'jobs2' }) as never), /defineTopic/)
@@ -102,10 +112,22 @@ describe('handles', () => {
     const queue = mq.queue(defineQueue({ name: 'jobs' }))
     const topic = mq.topic(defineTopic({ name: 'events' }))
     await assert.rejects(queue.consume('nope' as never), ConeyConfigError)
-    await assert.rejects(queue.consume(() => {}, { prefetch: 0 }), ConeyConfigError)
-    await assert.rejects(queue.consume(() => {}, { timeoutMs: -1 }), ConeyConfigError)
-    await assert.rejects(topic.subscribe([], () => {}), ConeyConfigError)
-    await assert.rejects(topic.subscribe([''], () => {}), ConeyConfigError)
+    await assert.rejects(
+      queue.consume(() => {}, { prefetch: 0 }),
+      ConeyConfigError,
+    )
+    await assert.rejects(
+      queue.consume(() => {}, { timeoutMs: -1 }),
+      ConeyConfigError,
+    )
+    await assert.rejects(
+      topic.subscribe([], () => {}),
+      ConeyConfigError,
+    )
+    await assert.rejects(
+      topic.subscribe([''], () => {}),
+      ConeyConfigError,
+    )
     await assert.rejects(queue.replayDead({ limit: -1 }), ConeyConfigError)
     assert.equal(mq.state, 'idle') // nothing above may start the connection
   })
@@ -115,8 +137,14 @@ describe('handles', () => {
     const queue = mq.queue(defineQueue({ name: 'jobs' }))
     const topic = mq.topic(defineTopic({ name: 'events' }))
     await mq.close()
-    await assert.rejects(queue.consume(() => {}), ConeyClosedError)
-    await assert.rejects(topic.subscribe(['a.*'], () => {}), ConeyClosedError)
+    await assert.rejects(
+      queue.consume(() => {}),
+      ConeyClosedError,
+    )
+    await assert.rejects(
+      topic.subscribe(['a.*'], () => {}),
+      ConeyClosedError,
+    )
     await assert.rejects(queue.inspect(), ConeyClosedError)
     await assert.rejects(queue.replayDead(), ConeyClosedError)
     await assert.rejects(queue.purgeDead(), ConeyClosedError)

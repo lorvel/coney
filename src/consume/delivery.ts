@@ -27,12 +27,15 @@ export function contextOf(raw: ConsumeMessage): DeliveryContext {
     // The contract requires a string id; a foreign message without one gets ''
     // (a generated id would not be stable across redeliveries).
     id: typeof properties.messageId === 'string' ? properties.messageId : '',
-    attempt: typeof retries === 'number' && Number.isInteger(retries) && retries >= 0 ? retries + 1 : 1,
+    attempt:
+      typeof retries === 'number' && Number.isInteger(retries) && retries >= 0 ? retries + 1 : 1,
     redelivered: raw.fields.redelivered,
     routingKey: raw.fields.routingKey,
     headers,
     ...(publishedAt !== undefined ? { publishedAt } : {}),
-    ...(typeof properties.appId === 'string' && properties.appId !== '' ? { appId: properties.appId } : {}),
+    ...(typeof properties.appId === 'string' && properties.appId !== ''
+      ? { appId: properties.appId }
+      : {}),
   }
 }
 
@@ -55,7 +58,10 @@ export function confirmPublish(
 }
 
 /** amqplib publish options rebuilt from a delivery's properties: what coney understands, headers replaced. */
-export function republishOptions(rawProperties: unknown, headers: Record<string, unknown>): Record<string, unknown> {
+export function republishOptions(
+  rawProperties: unknown,
+  headers: Record<string, unknown>,
+): Record<string, unknown> {
   const properties = (rawProperties ?? {}) as Record<string, unknown>
   const options: Record<string, unknown> = { headers }
   // Whitelisted pass-through: userId is dropped (RabbitMQ rejects a mismatch with

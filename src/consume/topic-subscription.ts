@@ -49,7 +49,9 @@ export class TopicSubscription<T> extends BaseConsumer {
       // Adopt BEFORE consume — see BaseConsumer.onDelivery on the delivery race.
       this.adoptChannel(channel)
       this.queueName = declared.queue
-      const ok = await channel.consume(declared.queue, (raw) => this.onDelivery(channel, raw), { consumerTag: this.tag })
+      const ok = await channel.consume(declared.queue, (raw) => this.onDelivery(channel, raw), {
+        consumerTag: this.tag,
+      })
       this.consumerTag = ok.consumerTag
       if (this.everAttached) {
         this.emit({
@@ -80,7 +82,12 @@ export class TopicSubscription<T> extends BaseConsumer {
     const { channel } = this
     this.channel = null
     this.consumerTag = null
-    this.emit({ event: 'coney.consumer_stopped', level: 'info', queue: this.queueName ?? '', consumerTag: this.tag })
+    this.emit({
+      event: 'coney.consumer_stopped',
+      level: 'info',
+      queue: this.queueName ?? '',
+      consumerTag: this.tag,
+    })
     if (channel !== null) void channel.close().catch(() => {})
   }
 

@@ -6,7 +6,12 @@
  */
 
 import type { Channel } from 'amqplib'
-import { ConeyConfigError, ConeyError, ConeyUnavailableError, topologyError } from '../core/errors.js'
+import {
+  ConeyConfigError,
+  ConeyError,
+  ConeyUnavailableError,
+  topologyError,
+} from '../core/errors.js'
 import type { LogEmitter } from '../core/log.js'
 import type { QueueDef } from '../defs/define.js'
 import type { ConnectionManager } from '../connection/manager.js'
@@ -30,7 +35,11 @@ export async function inspectQueue(ctx: QueueOpsContext, wire: string): Promise<
   try {
     const main = await checkQueue(channel, wire)
     const dead = await checkQueue(channel, `${wire}.dead`)
-    return Object.freeze({ ready: main.messageCount, consumers: main.consumerCount, dead: dead.messageCount })
+    return Object.freeze({
+      ready: main.messageCount,
+      consumers: main.consumerCount,
+      dead: dead.messageCount,
+    })
   } finally {
     await channel.close().catch(() => {})
   }
@@ -75,7 +84,10 @@ export async function replayDeadQueue(
         }
       }
       const previous = headers['x-replayed']
-      headers['x-replayed'] = (typeof previous === 'number' && Number.isInteger(previous) && previous >= 0 ? previous : 0) + 1
+      headers['x-replayed'] =
+        (typeof previous === 'number' && Number.isInteger(previous) && previous >= 0
+          ? previous
+          : 0) + 1
       await confirmPublish(channel, {
         exchange: '',
         routingKey: wire,
@@ -100,7 +112,10 @@ export async function replayDeadQueue(
   }
 }
 
-export async function purgeDeadQueue(ctx: QueueOpsContext, wire: string): Promise<{ readonly purged: number }> {
+export async function purgeDeadQueue(
+  ctx: QueueOpsContext,
+  wire: string,
+): Promise<{ readonly purged: number }> {
   ctx.ensureNotClosed()
   await ctx.manager.waitForOpen()
   const deadWire = `${wire}.dead`
@@ -117,7 +132,10 @@ export async function purgeDeadQueue(ctx: QueueOpsContext, wire: string): Promis
 }
 
 /** `checkQueue` with the 404 wrapped as {@link ConeyTopologyError} (target + AMQP code). */
-async function checkQueue(channel: Channel, name: string): Promise<{ messageCount: number; consumerCount: number }> {
+async function checkQueue(
+  channel: Channel,
+  name: string,
+): Promise<{ messageCount: number; consumerCount: number }> {
   try {
     return await channel.checkQueue(name)
   } catch (err) {

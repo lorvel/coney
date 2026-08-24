@@ -1,0 +1,8 @@
+dist/
+yarn.lock
+*.log
+.idea/
+# Claude Code local state — ignored outside the repo, never committed
+.claude/
+# The API contract and its examples — hand-authored layout, edited deliberately
+docs/api/

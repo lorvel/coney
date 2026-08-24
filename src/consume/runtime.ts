@@ -114,7 +114,10 @@ export abstract class BaseConsumer {
     }
   }
 
-  protected abstract processDelivery(channel: Channel | ConfirmChannel, raw: ConsumeMessage): Promise<void>
+  protected abstract processDelivery(
+    channel: Channel | ConfirmChannel,
+    raw: ConsumeMessage,
+  ): Promise<void>
 
   /** Broker-initiated cancel (queue deleted): drop the channel; the next `setup` re-attaches. */
   protected abstract handleBrokerCancel(): void
@@ -220,22 +223,33 @@ export abstract class BaseConsumer {
   }
 
   /** ack with the failure contained: a dead channel means the broker redelivers (duplicate, never a loss). */
-  protected safeAck(channel: Channel | ConfirmChannel, raw: ConsumeMessage, queue: string, messageId: string): void {
+  protected safeAck(
+    channel: Channel | ConfirmChannel,
+    raw: ConsumeMessage,
+    queue: string,
+    messageId: string,
+  ): void {
     try {
       channel.ack(raw)
     } catch (err) {
-      this.emit({ event: 'coney.ack_failed', level: 'warn', queue, messageId, reason: reasonOf(err) })
+      this.emit({
+        event: 'coney.ack_failed',
+        level: 'warn',
+        queue,
+        messageId,
+        reason: reasonOf(err),
+      })
     }
   }
 
   /** The user-facing handle (a stable facade; `active` reflects the runtime). */
   subscriptionFacade(): Subscription {
-    const runtime = this
+    const isActive = (): boolean => this.activeFlag
     return {
       get active(): boolean {
-        return runtime.activeFlag
+        return isActive()
       },
-      cancel: (options?: CancelOptions) => runtime.cancel(options),
+      cancel: (options?: CancelOptions) => this.cancel(options),
     }
   }
 }

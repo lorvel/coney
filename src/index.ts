@@ -23,7 +23,15 @@ export type {
 export type { ReconnectPolicy } from './connection/policy.js'
 export type { RetryPolicy } from './defs/retry.js'
 export { defineQueue, defineTopic } from './defs/define.js'
-export type { AnyDef, QueueDef, QueueDefInput, Schema, TopicBinding, TopicDef, TopicDefInput } from './defs/define.js'
+export type {
+  AnyDef,
+  QueueDef,
+  QueueDefInput,
+  Schema,
+  TopicBinding,
+  TopicDef,
+  TopicDefInput,
+} from './defs/define.js'
 export type { HeaderValue, PublishOptions } from './core/codec.js'
 export type {
   CancelOptions,

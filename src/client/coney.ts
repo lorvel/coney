@@ -14,9 +14,14 @@ import {
   validateRetryPolicy,
   wireName,
 } from '../defs/define.js'
-import { DEFAULT_RETRY, bucketLogicalName, effectiveDelays, type RetryPolicy } from '../defs/retry.js'
+import {
+  DEFAULT_RETRY,
+  bucketLogicalName,
+  effectiveDelays,
+  type RetryPolicy,
+} from '../defs/retry.js'
 import { resolveReconnectPolicy, type ReconnectPolicy } from '../connection/policy.js'
-import { ConnectionManager, type ChannelFactory } from '../connection/manager.js'
+import { ConnectionManager } from '../connection/manager.js'
 import { TopologyManager } from '../topology/manager.js'
 import { Publisher } from '../publish/publisher.js'
 import { encodeMessage, validateRoutingKey, type PublishOptions } from '../core/codec.js'
@@ -36,7 +41,17 @@ import { BaseConsumer } from '../consume/runtime.js'
 import { QueueConsumer } from '../consume/queue-consumer.js'
 import { TopicSubscription } from '../consume/topic-subscription.js'
 import { inspectQueue, purgeDeadQueue, replayDeadQueue, type QueueOpsContext } from './queue-ops.js'
-import type { CloseOptions, Coney, ConeyOptions, ConeyState, OpenOptions, QueueHandle, QueueStats, RetryBucketStats, TopicHandle } from './types.js'
+import type {
+  CloseOptions,
+  Coney,
+  ConeyOptions,
+  ConeyState,
+  OpenOptions,
+  QueueHandle,
+  QueueStats,
+  RetryBucketStats,
+  TopicHandle,
+} from './types.js'
 
 interface PublishArgs<T> {
   def: QueueDef<T> | TopicDef<T>
@@ -70,12 +85,15 @@ export function createConey(options: ConeyOptions): Coney {
     throw new ConeyConfigError('url is not a valid URL', { cause: err })
   }
   if (parsed.protocol !== 'amqp:' && parsed.protocol !== 'amqps:') {
-    throw new ConeyConfigError(`url must use the amqp:// or amqps:// scheme, got "${parsed.protocol}"`)
+    throw new ConeyConfigError(
+      `url must use the amqp:// or amqps:// scheme, got "${parsed.protocol}"`,
+    )
   }
   if (options.prefix !== undefined) validateName(options.prefix, 'prefix')
   if (options.name !== undefined) validateInstanceName(options.name)
   const reconnect = resolveReconnectPolicy(options.reconnect)
-  if (options.publishTimeoutMs !== undefined) validateDurationMs(options.publishTimeoutMs, 'publishTimeoutMs')
+  if (options.publishTimeoutMs !== undefined)
+    validateDurationMs(options.publishTimeoutMs, 'publishTimeoutMs')
   const retry = options.retry ?? DEFAULT_RETRY
   validateRetryPolicy(retry, 'retry')
   return new ConeyClient(options, reconnect, retry)
@@ -215,7 +233,15 @@ class ConeyClient implements Coney {
       def,
       name: wire,
       publish: (body, options) =>
-        this.publishTo({ def, target: wire, exchange: '', routingKey: wire, typeProp: def.name, body, options }),
+        this.publishTo({
+          def,
+          target: wire,
+          exchange: '',
+          routingKey: wire,
+          typeProp: def.name,
+          body,
+          options,
+        }),
       consume: (handler, options) => this.startQueueConsumer(def, wire, handler, options),
       inspect: (): Promise<QueueStats> => inspectQueue(ops, wire),
       replayDead: (options) => replayDeadQueue(ops, def, wire, options),
@@ -233,9 +259,18 @@ class ConeyClient implements Coney {
         } catch (err) {
           return Promise.reject(err)
         }
-        return this.publishTo({ def, target: wire, exchange: wire, routingKey, typeProp: routingKey, body, options })
+        return this.publishTo({
+          def,
+          target: wire,
+          exchange: wire,
+          routingKey,
+          typeProp: routingKey,
+          body,
+          options,
+        })
       },
-      subscribe: (patterns, handler, options) => this.startSubscription(def, wire, patterns, handler, options),
+      subscribe: (patterns, handler, options) =>
+        this.startSubscription(def, wire, patterns, handler, options),
     }
   }
 
@@ -255,7 +290,8 @@ class ConeyClient implements Coney {
    */
   private async runPublish<T>(args: PublishArgs<T>): Promise<void> {
     if (this.phaseOverride !== null) throw new ConeyClosedError('the client is closing or closed')
-    if (args.options?.timeoutMs !== undefined) validateDurationMs(args.options.timeoutMs, 'timeoutMs')
+    if (args.options?.timeoutMs !== undefined)
+      validateDurationMs(args.options.timeoutMs, 'timeoutMs')
     const body = parseBody(args.def, args.body)
     // Encoding is pure — do it before any waiting so config errors (reserved
     // headers, non-JSON bodies) fail fast. `timestamp`/`x-published-at` therefore
@@ -274,7 +310,12 @@ class ConeyClient implements Coney {
       await this.manager.waitForOpen(timeoutMs)
       await this.ensureWithinBudget(args.def, deadline)
       const remaining = Math.max(0, deadline - Date.now())
-      await this.publisher.send({ exchange: args.exchange, routingKey: args.routingKey, encoded, timeoutMs: remaining })
+      await this.publisher.send({
+        exchange: args.exchange,
+        routingKey: args.routingKey,
+        encoded,
+        timeoutMs: remaining,
+      })
     } catch (err) {
       this.emit({
         event: 'coney.publish_failed',
@@ -301,7 +342,10 @@ class ConeyClient implements Coney {
     await raceTimeout(
       ensure,
       remaining,
-      () => new ConeyUnavailableError(`the topology assert of "${def.name}" did not complete within the publish timeout`),
+      () =>
+        new ConeyUnavailableError(
+          `the topology assert of "${def.name}" did not complete within the publish timeout`,
+        ),
     )
   }
 
@@ -318,7 +362,9 @@ class ConeyClient implements Coney {
     this.emit({ event: 'coney.closing', level: 'info', drainMs, inFlight: inFlightAtStart })
     await Promise.all(runtimes.map((runtime) => runtime.stopDelivery()))
     const deadline = Date.now() + drainMs
-    const drainResults = await Promise.all(runtimes.map((runtime) => runtime.waitInFlight(deadline)))
+    const drainResults = await Promise.all(
+      runtimes.map((runtime) => runtime.waitInFlight(deadline)),
+    )
     const drained = drainResults.every(Boolean)
     let inFlight = 0
     if (!drained) {

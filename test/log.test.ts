@@ -7,7 +7,10 @@ const infoEvent: ConeyLogEvent = { event: 'coney.connected', level: 'info', url:
 
 describe('redactUrl', () => {
   it('masks the password of a parseable URL', () => {
-    assert.equal(redactUrl('amqp://lorvel:s3cr3t@home-dev:5672/lorvel'), 'amqp://lorvel:***@home-dev:5672/lorvel')
+    assert.equal(
+      redactUrl('amqp://lorvel:s3cr3t@home-dev:5672/lorvel'),
+      'amqp://lorvel:***@home-dev:5672/lorvel',
+    )
     assert.equal(redactUrl('amqps://u:p@h/%2f'), 'amqps://u:***@h/%2f')
   })
 
@@ -17,7 +20,10 @@ describe('redactUrl', () => {
   })
 
   it('falls back to the text redactor for unparseable input', () => {
-    assert.equal(redactUrl('not a url with amqp://u:pw@h inside'), 'not a url with amqp://***@h inside')
+    assert.equal(
+      redactUrl('not a url with amqp://u:pw@h inside'),
+      'not a url with amqp://***@h inside',
+    )
   })
 })
 
@@ -31,10 +37,19 @@ describe('redactText', () => {
   })
 
   it('cannot be defeated by an empty username or an unencoded @ in the password', () => {
-    assert.equal(redactText('cannot reach amqp://:secret@host:5672'), 'cannot reach amqp://***@host:5672')
-    assert.equal(redactText('cannot reach amqp://user:p@ss@host:5672'), 'cannot reach amqp://***@host:5672')
+    assert.equal(
+      redactText('cannot reach amqp://:secret@host:5672'),
+      'cannot reach amqp://***@host:5672',
+    )
+    assert.equal(
+      redactText('cannot reach amqp://user:p@ss@host:5672'),
+      'cannot reach amqp://***@host:5672',
+    )
     // No credentials, no '@' — untouched.
-    assert.equal(redactText('cannot reach amqp://host:5672/vhost'), 'cannot reach amqp://host:5672/vhost')
+    assert.equal(
+      redactText('cannot reach amqp://host:5672/vhost'),
+      'cannot reach amqp://host:5672/vhost',
+    )
   })
 })
 

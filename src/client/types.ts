@@ -8,7 +8,13 @@ import type { RetryPolicy } from '../defs/retry.js'
 import type { ReconnectPolicy } from '../connection/policy.js'
 import type { PublishOptions } from '../core/codec.js'
 import type { ConeyLogEvent } from '../core/log.js'
-import type { CloseResult, ConsumeOptions, Handler, SubscribeOptions, Subscription } from '../consume/types.js'
+import type {
+  CloseResult,
+  ConsumeOptions,
+  Handler,
+  SubscribeOptions,
+  Subscription,
+} from '../consume/types.js'
 
 /** Lifecycle of a {@link Coney} client. */
 export type ConeyState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closing' | 'closed'
@@ -135,5 +141,9 @@ export interface TopicHandle<T> {
    * dropped — no retry. Dies with the connection: after a reconnect a new queue is bound and
    * messages in between are lost (`coney.subscription_reset`). Durable delivery → {@link QueueDefInput.bindings}.
    */
-  subscribe(patterns: readonly string[], handler: Handler<T>, options?: SubscribeOptions): Promise<Subscription>
+  subscribe(
+    patterns: readonly string[],
+    handler: Handler<T>,
+    options?: SubscribeOptions,
+  ): Promise<Subscription>
 }

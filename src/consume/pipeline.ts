@@ -82,7 +82,12 @@ export async function runConsumePipeline<T>(args: PipelineArgs<T>): Promise<Pipe
   const reason = truncateReason(reasonOf(error))
   if (delays === null) return { kind: 'drop', error, reason }
   if (error instanceof UnrecoverableError) {
-    return { kind: 'dead', attempt: context.attempt, reason: truncateReason(`unrecoverable: ${reasonOf(error)}`), error }
+    return {
+      kind: 'dead',
+      attempt: context.attempt,
+      reason: truncateReason(`unrecoverable: ${reasonOf(error)}`),
+      error,
+    }
   }
   const delayMs = nextDelayMs(delays, context.attempt)
   if (delayMs !== undefined) {

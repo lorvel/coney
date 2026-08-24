@@ -22,7 +22,8 @@ export function validateDurationMs(
   options?: { positive?: boolean },
 ): asserts value is number {
   const floor = options?.positive === true ? 'a positive' : 'a'
-  const bound = options?.positive === true ? `number <= ${TIMEOUT_MAX}` : `number >= 0 and <= ${TIMEOUT_MAX}`
+  const bound =
+    options?.positive === true ? `number <= ${TIMEOUT_MAX}` : `number >= 0 and <= ${TIMEOUT_MAX}`
   if (
     typeof value !== 'number' ||
     Number.isNaN(value) ||
@@ -35,7 +36,11 @@ export function validateDurationMs(
 }
 
 /** Race a promise against a deadline; the loser's late rejection is swallowed. */
-export function raceTimeout<T>(promise: Promise<T>, timeoutMs: number, makeError: () => Error): Promise<T> {
+export function raceTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  makeError: () => Error,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       promise.catch(() => {})

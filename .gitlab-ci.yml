@@ -10,6 +10,8 @@ build:
   stage: build
   script:
     - yarn install --frozen-lockfile
+    - yarn format:check
+    - yarn lint
     - yarn typecheck
     - yarn typecheck:design
     - yarn build
@@ -45,7 +47,7 @@ test-integration:
     RABBITMQ_DEFAULT_USER: coney
     RABBITMQ_DEFAULT_PASS: coney-it
     RABBITMQ_NODENAME: coney-ci
-    RABBITMQ_NODE_PORT: "5673"
+    RABBITMQ_NODE_PORT: '5673'
     RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: >-
       -rabbitmq_management listener [{port,15673}]
       -rabbitmq_prometheus tcp_config [{port,15693}]

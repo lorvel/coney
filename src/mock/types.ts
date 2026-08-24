@@ -16,7 +16,12 @@ export interface PublishedRecord {
 
 export type DeliveryOutcome =
   | { readonly outcome: 'ack' }
-  | { readonly outcome: 'retry'; readonly attempt: number; readonly delayMs: number; readonly error: unknown }
+  | {
+      readonly outcome: 'retry'
+      readonly attempt: number
+      readonly delayMs: number
+      readonly error: unknown
+    }
   | { readonly outcome: 'dead'; readonly reason: string; readonly error?: unknown }
   /** Subscriptions only: the handler threw and the message was dropped. */
   | { readonly outcome: 'dropped'; readonly error: unknown }
@@ -39,7 +44,12 @@ export interface ConeyMock extends Coney {
    */
   deliver<T>(def: QueueDef<T>, body: T, options?: DeliverOptions): Promise<DeliveryOutcome>
   /** Deliver to every subscription and bound queue whose patterns match `routingKey`, in registration order. */
-  deliverTopic<T>(def: TopicDef<T>, routingKey: string, body: T, options?: DeliverOptions): Promise<readonly DeliveryOutcome[]>
+  deliverTopic<T>(
+    def: TopicDef<T>,
+    routingKey: string,
+    body: T,
+    options?: DeliverOptions,
+  ): Promise<readonly DeliveryOutcome[]>
   /** Clear `published`; registered consumers stay. */
   reset(): void
 }

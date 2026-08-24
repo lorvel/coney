@@ -85,9 +85,12 @@ export function stringifyBody(body: unknown): string {
   try {
     json = JSON.stringify(body)
   } catch (err) {
-    throw new ConeyConfigError('body is not JSON-serializable (circular structure, BigInt, or a throwing toJSON)', {
-      cause: err,
-    })
+    throw new ConeyConfigError(
+      'body is not JSON-serializable (circular structure, BigInt, or a throwing toJSON)',
+      {
+        cause: err,
+      },
+    )
   }
   if (json === undefined) {
     throw new ConeyConfigError('body is not JSON-serializable (undefined, a function, or a symbol)')
