@@ -1,6 +1,6 @@
 # coney
 
-> **Status: design phase (0.x, unpublished).** The v0.1 design is locked — see [docs/design.md](docs/design.md). The API surface is already real: [docs/api/coney.d.ts](docs/api/coney.d.ts) and the [examples](docs/api/examples) type-check today (`yarn typecheck:design`).
+> **Status: in development (0.x, unpublished).** The v0.1 design is locked — see [docs/design.md](docs/design.md) — and the connection core (client, reconnection, topology, confirmed publishing) is implemented and tested. Consuming, subscriptions and the test double land next; until then those methods throw. The full API surface is real today: [docs/api/coney.d.ts](docs/api/coney.d.ts) — CI keeps the built declarations identical to it.
 
 An opinionated RabbitMQ toolkit for Node.js.
 
@@ -10,6 +10,16 @@ An opinionated RabbitMQ toolkit for Node.js.
 - **Graceful drain**: `close({ drainMs })` cancels consumers, waits for in-flight handlers, returns `{ drained, inFlight }`.
 - **Topic pub/sub**: per-instance exclusive subscriptions, or durable bound queues with the full retry machinery.
 - **Typed definitions** (`defineQueue` / `defineTopic` with any structural `schema` — zod fits as-is), a typed log-event stream, and an in-memory test double (`createConeyMock`).
+
+## Install
+
+```sh
+yarn add @lorvel/coney amqplib
+```
+
+`amqplib >= 1.1 < 3` is a peer dependency. Requires Node ≥ 20.19 (ESM-only package; `require()` works from 20.19 up). Until the public release the package lives in a private GitLab registry.
+
+## Quickstart
 
 ```ts
 import { createConey, defineQueue } from '@lorvel/coney'
@@ -30,8 +40,10 @@ await mq.queue(EmbedKu).consume(
 await mq.queue(EmbedKu).publish({ kuId }) // resolves on broker confirm
 ```
 
-Requires Node ≥ 20.19 (ESM-only package; `require()` works from 20.19 up). `amqplib >= 1.1 < 3` is a peer dependency.
+## Migrating from 2.x
 
-coney 3.x is a ground-up rewrite and is **not** compatible with coney 2.x, neither on the API nor on the wire. A migration guide ships with the public release.
+coney 3.x is a ground-up rewrite and is **not** compatible with coney 2.x, neither on the API nor on the wire (2.x per-message-TTL retry queues become shared, delay-keyed buckets). A full migration guide ships with the public release; until then, treat 3.x as a new library.
+
+## License
 
 MIT © Tu Tran

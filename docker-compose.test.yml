@@ -1,0 +1,18 @@
+# Throwaway RabbitMQ for the broker-backed tests (they skip when RABBITMQ_URL is unset).
+#
+#   docker compose -f docker-compose.test.yml up -d --wait
+#   RABBITMQ_URL=amqp://guest:guest@localhost:5673 \
+#   RABBITMQ_MGMT_URL=http://guest:guest@localhost:15673 \
+#   yarn test
+#   docker compose -f docker-compose.test.yml down -v
+services:
+  rabbitmq:
+    image: rabbitmq:4.3-management
+    ports:
+      - "5673:5672" # AMQP
+      - "15673:15672" # management API (force-close tests)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 5s
+      timeout: 10s
+      retries: 12

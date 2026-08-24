@@ -312,22 +312,26 @@ export declare class ConeyError extends Error {
 /** No broker connection within the allowed time, or the reconnect policy gave up. */
 export declare class ConeyUnavailableError extends ConeyError {
   readonly code: 'UNAVAILABLE'
+  constructor(message: string, options?: { cause?: unknown })
 }
 
 /** Operation attempted on a closing/closed client. */
 export declare class ConeyClosedError extends ConeyError {
   readonly code: 'CLOSED'
+  constructor(message: string, options?: { cause?: unknown })
 }
 
 /** The broker refused (nacked) a publish. */
 export declare class ConeyPublishError extends ConeyError {
   readonly code: 'PUBLISH'
+  constructor(message: string, options?: { cause?: unknown })
 }
 
 /** A body failed the def's schema on the publishing side. `cause` is the schema's own error. */
 export declare class ConeySchemaError extends ConeyError {
   readonly code: 'SCHEMA'
   readonly cause: unknown
+  constructor(message: string, options?: { cause?: unknown })
 }
 
 /** Queue/exchange assertion failed — typically AMQP 406 PRECONDITION_FAILED when an existing object has different arguments. */
@@ -337,11 +341,13 @@ export declare class ConeyTopologyError extends ConeyError {
   readonly target: string
   /** AMQP reply code when available (e.g. 406). */
   readonly amqpCode?: number
+  constructor(message: string, info: { target: string; amqpCode?: number; cause?: unknown })
 }
 
 /** Invalid options or definitions; always thrown synchronously, never on the network path. */
 export declare class ConeyConfigError extends ConeyError {
   readonly code: 'CONFIG'
+  constructor(message: string, options?: { cause?: unknown })
 }
 
 /** Throw from a handler to dead-letter immediately, skipping the ladder. `x-reason` = `unrecoverable: <message>`. */

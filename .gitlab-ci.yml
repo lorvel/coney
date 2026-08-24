@@ -1,0 +1,21 @@
+stages:
+  - build
+
+default:
+  image: node:22
+
+# Validate on every push / merge request. The publish job (tag -> npm registry)
+# arrives with the first release.
+build:
+  stage: build
+  script:
+    - yarn install --frozen-lockfile
+    - yarn typecheck
+    - yarn typecheck:design
+    - yarn build
+    - yarn test
+    - node scripts/diff-api.mjs
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 hour

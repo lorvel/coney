@@ -9,12 +9,28 @@
   "type": "module",
   "engines": { "node": ">=20.19" },
   "repository": { "type": "git", "url": "git+https://gitlab.com/lorvel/packages/coney.git" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "CHANGELOG.md"],
+  "sideEffects": false,
   "scripts": {
-    "typecheck:design": "tsc -p docs/api"
+    "build": "tsc",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "typecheck:design": "tsc -p docs/api",
+    "test": "tsx --test test/*.test.ts",
+    "prepare": "yarn build"
   },
   "peerDependencies": { "amqplib": ">=1.1.0 <3.0.0" },
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "amqplib": "^2.0.1",
+    "tsx": "^4.23.12",
     "typescript": "^6.0.3",
     "zod": "^4.4.3"
   }
