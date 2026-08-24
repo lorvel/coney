@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": false,
+    "esModuleInterop": true,
+    "paths": {
+      "@lorvel/coney": ["./coney.d.ts"]
+    }
+  },
+  "include": ["coney.d.ts", "examples/**/*.ts"]
+}
