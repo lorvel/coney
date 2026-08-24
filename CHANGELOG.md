@@ -39,3 +39,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A broker-backed integration suite (`yarn test:integration`) covering retry
   timing, shared buckets, dead-letter flows, prefetch, drains, forced
   disconnects and 406 isolation; CI runs it against a RabbitMQ service container.
+
+### Fixed (pre-release hardening review)
+
+- Reconnect could deadlock permanently when a `consume()` was mid-attach at the
+  moment the connection dropped (the setup hook awaited a channel promise that
+  only resolves after setup returns); setup now skips in-flight attaches, which
+  complete on the new connection by themselves.
+- `close()` ordering: consumer runtimes are marked inactive first and the setup
+  hook skips consumer re-attach while closing, so a reconnect landing inside the
+  drain window can no longer resurrect cancelled consumers or run handlers after
+  `close()` resolved; a `cancel()` or close racing an in-flight attach now tears
+  the late channel down instead of leaving a phantom consumer, and `consume()`'s
+  rollback fully disposes a runtime the setup hook had already attached.
+- The whole publish pipeline shares one `timeoutMs` budget: a first-use topology
+  assert racing a disconnect now rejects within the budget instead of parking
+  for the outage (which could also stall `close()`).
+- Publisher: back-pressure episodes no longer leak a `close` listener each; a
+  channel creation resolving after a reconnect already provided a fresh channel
+  is discarded instead of superseding it, and a stale channel's close no longer
+  rejects confirms pending on the healthy one; the lazy path no longer registers
+  safety listeners twice.
+- Every timeout/drain option now rejects non-finite values and values above
+  Node's `setTimeout` bound (2^31 − 1 ms) — `Infinity` used to be silently
+  clamped to 1 ms, inverting "wait forever" into "fail immediately".
+- `close()`/`cancel()` no longer hold the process open for the remainder of the
+  drain budget after the handlers already settled (leaked race timer).
+- Credential redaction also covers `amqp://` URLs with an empty username or an
+  unencoded `@` in the password; non-JSON-serializable bodies (circular, BigInt,
+  throwing `toJSON`) throw `ConeyConfigError` instead of a raw `TypeError`; the
+  mock's topic matcher is memoized (no exponential backtracking on `#`-heavy
+  patterns).
+- `createConeyMock().close()` now mirrors the real lifecycle (state `closed`,
+  registrations deactivated, gated operations reject with `ConeyClosedError`),
+  and a handler cancelling a subscription during `deliverTopic` can no longer
+  make later recipients miss the delivery.

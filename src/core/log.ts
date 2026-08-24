@@ -46,9 +46,20 @@ export function redactUrl(url: string): string {
   }
 }
 
-/** Redact credentials of any `amqp(s)://user:pass@` occurrences embedded in free text (error messages). */
+/**
+ * Redact the credentials of any `amqp(s)://…@` occurrence embedded in free text
+ * (error messages). The whole userinfo is replaced up to the LAST `@` of the
+ * token, so empty usernames (`amqp://:secret@host`) and unencoded `@` inside a
+ * password (`amqp://u:p@ss@host`) cannot leak — over-redacting the username is
+ * the acceptable cost of a redactor.
+ */
 export function redactText(text: string): string {
-  return text.replace(/\b(amqps?:\/\/[^\s/@:]+):[^\s@]+@/gi, '$1:***@')
+  return text.replace(/\b(amqps?:\/\/)\S*@/gi, '$1***@')
+}
+
+/** Human text of an unknown thrown value, credentials redacted. */
+export function reasonOf(error: unknown): string {
+  return redactText(error instanceof Error ? error.message : String(error))
 }
 
 /**

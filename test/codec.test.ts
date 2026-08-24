@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { decodeJson, encodeMessage } from '../src/codec.js'
-import { ConeyConfigError } from '../src/errors.js'
+import { decodeJson, encodeMessage } from '../src/core/codec.js'
+import { ConeyConfigError } from '../src/core/errors.js'
 
 const NOW = new Date('2026-08-24T10:00:00.123Z')
 
@@ -68,6 +68,22 @@ describe('encodeMessage', () => {
       () => encodeMessage({ body: () => 1, type: 't', appId: undefined, options: undefined, now: NOW }),
       ConeyConfigError,
     )
+  })
+
+  it('maps stringify THROWS (circular, BigInt, throwing toJSON) to ConeyConfigError too', () => {
+    const circular: Record<string, unknown> = {}
+    circular['self'] = circular
+    for (const body of [circular, { n: 1n }, { toJSON: () => { throw new Error('boom from toJSON') } }]) {
+      try {
+        encodeMessage({ body, type: 't', appId: undefined, options: undefined, now: NOW })
+        assert.fail('expected a throw')
+      } catch (err) {
+        // A raw TypeError must never escape the library's error taxonomy.
+        assert.ok(err instanceof ConeyConfigError, `got ${String(err)}`)
+        assert.equal((err as ConeyConfigError).code, 'CONFIG')
+        assert.notEqual((err as ConeyConfigError).cause, undefined)
+      }
+    }
   })
 })
 

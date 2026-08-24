@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { makeEmitter, redactText, redactUrl, type ConeyLogEvent } from '../src/log.js'
+import { makeEmitter, redactText, redactUrl, type ConeyLogEvent } from '../src/core/log.js'
 
 const warnEvent: ConeyLogEvent = { event: 'coney.disconnected', level: 'warn', reason: 'boom' }
 const infoEvent: ConeyLogEvent = { event: 'coney.connected', level: 'info', url: 'amqp://h' }
@@ -17,17 +17,24 @@ describe('redactUrl', () => {
   })
 
   it('falls back to the text redactor for unparseable input', () => {
-    assert.equal(redactUrl('not a url with amqp://u:pw@h inside'), 'not a url with amqp://u:***@h inside')
+    assert.equal(redactUrl('not a url with amqp://u:pw@h inside'), 'not a url with amqp://***@h inside')
   })
 })
 
 describe('redactText', () => {
-  it('masks credentials embedded in error messages', () => {
+  it('masks the whole userinfo embedded in error messages', () => {
     assert.equal(
       redactText('connect ECONNREFUSED amqp://lorvel:secret@host:5672/vhost failed'),
-      'connect ECONNREFUSED amqp://lorvel:***@host:5672/vhost failed',
+      'connect ECONNREFUSED amqp://***@host:5672/vhost failed',
     )
     assert.equal(redactText('no url here'), 'no url here')
+  })
+
+  it('cannot be defeated by an empty username or an unencoded @ in the password', () => {
+    assert.equal(redactText('cannot reach amqp://:secret@host:5672'), 'cannot reach amqp://***@host:5672')
+    assert.equal(redactText('cannot reach amqp://user:p@ss@host:5672'), 'cannot reach amqp://***@host:5672')
+    // No credentials, no '@' — untouched.
+    assert.equal(redactText('cannot reach amqp://host:5672/vhost'), 'cannot reach amqp://host:5672/vhost')
   })
 })
 

@@ -49,7 +49,7 @@ export interface ConeyOptions {
   log?: ((event: ConeyLogEvent) => void) | false
   /** Reconnect policy — partial override of the defaults documented on {@link ReconnectPolicy}. */
   reconnect?: Partial<ReconnectPolicy>
-  /** Max wait for a (re)connection per publish before {@link ConeyUnavailableError}. Default `5000`; `0` = fail at once. Per-call: {@link PublishOptions.timeoutMs}. */
+  /** ONE budget for the whole publish pipeline (connection wait, lazy topology assert, confirm) before {@link ConeyUnavailableError}. Default `5000`; `0` = fail at once; finite, <= 2^31-1. Per-call: {@link PublishOptions.timeoutMs}. */
   publishTimeoutMs?: number
   /** Ladder for queue defs without `retry`. Default `{ delays: [10_000, 60_000, 300_000] }`. */
   retry?: RetryPolicy
@@ -58,12 +58,12 @@ export interface ConeyOptions {
 }
 
 export interface OpenOptions {
-  /** Reject with {@link ConeyUnavailableError} after this many ms; the reconnect loop keeps running (only `close()` stops it). Default: wait per {@link ReconnectPolicy}. */
+  /** Reject with {@link ConeyUnavailableError} after this many ms (finite, <= 2^31-1); the reconnect loop keeps running (only `close()` stops it). Default: wait per {@link ReconnectPolicy}. */
   timeoutMs?: number
 }
 
 export interface CloseOptions {
-  /** Max wait for in-flight handlers after consumers are cancelled. Default `10_000`. On expiry their `signal` is aborted, messages stay unacked (redelivered) and `drained` is `false`. */
+  /** Max wait for in-flight handlers after consumers are cancelled (finite, <= 2^31-1). Default `10_000`. On expiry their `signal` is aborted, messages stay unacked (redelivered) and `drained` is `false`. */
   drainMs?: number
 }
 
@@ -185,7 +185,7 @@ export interface PublishOptions {
   readonly headers?: Readonly<Record<string, HeaderValue>>
   /** `deliveryMode: 2`. Default `true`; `false` for transient fan-out where loss on broker restart is acceptable. */
   readonly persistent?: boolean
-  /** Overrides {@link ConeyOptions.publishTimeoutMs} for this call. */
+  /** Overrides {@link ConeyOptions.publishTimeoutMs} for this call (finite, <= 2^31-1). */
   readonly timeoutMs?: number
 }
 
@@ -224,7 +224,7 @@ export type Handler<T> = (message: Message<T>) => void | Promise<void>
 export interface ConsumeOptions {
   /** Max messages in flight (= max concurrent handler calls) for this consumer. Default `1`. */
   readonly prefetch?: number
-  /** Handler deadline: on expiry the message fails right away (retry/dead + ack), `signal` is aborted, the late result is ignored (`coney.handler_late`). Default: none. */
+  /** Handler deadline (finite, <= 2^31-1; omit for none — `Infinity` is rejected): on expiry the message fails right away (retry/dead + ack), `signal` is aborted, the late result is ignored (`coney.handler_late`). Default: none. */
   readonly timeoutMs?: number
 }
 
@@ -236,7 +236,7 @@ export interface SubscribeOptions {
 }
 
 export interface CancelOptions {
-  /** Max wait for in-flight handlers. Default `10_000` ms. */
+  /** Max wait for in-flight handlers (finite, <= 2^31-1). Default `10_000` ms. */
   readonly drainMs?: number
 }
 
@@ -406,7 +406,7 @@ export interface DeliverOptions {
   readonly redelivered?: boolean
 }
 
-/** In-memory {@link Coney}: `publish` records, `consume`/`subscribe` register, {@link ConeyMock.deliver} runs the real consumer pipeline (schema gate, ladder, `timeoutMs`). */
+/** In-memory {@link Coney}: `publish` records, `consume`/`subscribe` register, {@link ConeyMock.deliver} runs the real consumer pipeline (schema gate, ladder, `timeoutMs`). `close()` mirrors the real lifecycle: state `'closed'`, registrations deactivated, gated operations reject with {@link ConeyClosedError}. */
 export interface ConeyMock extends Coney {
   /** Every publish since creation or the last {@link ConeyMock.reset}, in order. */
   readonly published: readonly PublishedRecord[]

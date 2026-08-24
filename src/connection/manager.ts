@@ -7,53 +7,25 @@
 
 import amqplib from 'amqplib'
 import type { Channel, ChannelModel, ConfirmChannel, RecoveringChannelModel } from 'amqplib'
-import { ConeyClosedError, ConeyUnavailableError } from './errors.js'
-import { redactText, redactUrl, type LogEmitter } from './log.js'
-
-/** Backoff policy used for the initial connect AND every reconnect. */
-export interface ReconnectPolicy {
-  /** Delay before the first retry. Default `1000` ms. */
-  initialDelayMs: number
-  /** Upper bound for the growing delay. Default `30_000` ms. */
-  maxDelayMs: number
-  /** Multiplier applied after each failed attempt. Default `2`. */
-  factor: number
-  /** Random jitter as a fraction of the delay (`0.2` = ±20 %). Default `0.2`. */
-  jitter: number
-  /** Give up after this many consecutive failures (`coney.reconnect_exhausted`). Default `Infinity`. */
-  maxAttempts: number
-}
-
-export const DEFAULT_RECONNECT_POLICY: Readonly<ReconnectPolicy> = Object.freeze({
-  initialDelayMs: 1000,
-  maxDelayMs: 30_000,
-  factor: 2,
-  jitter: 0.2,
-  maxAttempts: Infinity,
-})
-
-/** amqplib's `recovery` option shape (subset coney sets; no amqplib types leak from here). */
-export interface RecoveryOptionsMapped {
-  initialDelay: number
-  maxDelay: number
-  factor: number
-  jitter: number
-  maxRetries: number
-}
-
-/** Map the public policy (`*Ms` fields, `maxAttempts`) onto amqplib's `recovery` names. */
-export function toRecoveryOptions(policy: ReconnectPolicy): RecoveryOptionsMapped {
-  return {
-    initialDelay: policy.initialDelayMs,
-    maxDelay: policy.maxDelayMs,
-    factor: policy.factor,
-    jitter: policy.jitter,
-    maxRetries: policy.maxAttempts,
-  }
-}
+import { ConeyClosedError, ConeyUnavailableError, toError } from '../core/errors.js'
+import { redactText, redactUrl, type LogEmitter } from '../core/log.js'
+import { toRecoveryOptions, type ReconnectPolicy } from './policy.js'
 
 /** Manager phases; the client overlays `closing`/`closed` while `close()` runs. */
 export type ConnectionPhase = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed'
+
+/**
+ * How channels are created: the manager itself (lazy paths — waits for `open`)
+ * or the setup-scoped factory passed to {@link ConnectionManager.onSetup}. Inside
+ * setup the factory is the ONLY correct source: the lazy manager paths would
+ * deadlock there (their `open` wait resolves only AFTER setup returns), and the
+ * factory also attaches the mandatory safety listeners so no setup-time caller
+ * can forget them.
+ */
+export interface ChannelFactory {
+  createChannel(): Promise<Channel>
+  createConfirmChannel(): Promise<ConfirmChannel>
+}
 
 interface OpenWaiter {
   resolve: () => void
@@ -63,11 +35,12 @@ interface OpenWaiter {
 export class ConnectionManager {
   /**
    * Runs on EVERY successful (re)connection, before pending channel waiters resolve.
-   * Set by the client: topology replay + publisher (and, in the next slice, consumer)
-   * channel recreation. Iron law: it must never reject — amqplib treats a rejected
-   * `setup` as a failed connection and retries forever. Guarded here anyway.
+   * Set by the client: topology replay + publisher + consumer channel recreation,
+   * all through `channels` (see {@link ChannelFactory} for why the raw model must
+   * not be used directly). Iron law: it must never reject — amqplib treats a
+   * rejected `setup` as a failed connection and retries forever. Guarded here anyway.
    */
-  onSetup: (model: ChannelModel) => Promise<void> = async () => {}
+  onSetup: (model: ChannelModel, channels: ChannelFactory) => Promise<void> = async () => {}
   /** Called once per connection loss, before any reconnect: reject in-flight confirms. */
   onDisconnect: (err: ConeyUnavailableError) => void = () => {}
 
@@ -239,8 +212,10 @@ export class ConnectionManager {
    * `handler-error` listener a throwing listener propagates into amqplib's socket
    * handling and kills the connection, and an unhandled `error` event would crash
    * the process. Coney wraps all of its own callbacks, so both are last-resort nets.
+   * Private on purpose: both creation paths (the lazy methods above and the setup
+   * factory) register automatically, exactly once.
    */
-  registerChannel(channel: Channel | ConfirmChannel): void {
+  private registerChannel(channel: Channel | ConfirmChannel): void {
     channel.on('error', () => {
       // The channel is dead; per-operation promises reject on their own.
     })
@@ -273,12 +248,24 @@ export class ConnectionManager {
       model.on('handler-error', (err: Error) => {
         process.emitWarning(err)
       })
-      await this.onSetup(model)
+      const channels: ChannelFactory = {
+        createChannel: async () => {
+          const channel = await model.createChannel()
+          this.registerChannel(channel)
+          return channel
+        },
+        createConfirmChannel: async () => {
+          const channel = await model.createConfirmChannel()
+          this.registerChannel(channel)
+          return channel
+        },
+      }
+      await this.onSetup(model, channels)
     } catch (err) {
       // Iron law (docs/design.md §4): never reject `setup` — amqplib would treat the
       // connection as failed and retry forever. Anything reaching this catch is a
       // coney bug; surface it without taking the connection down.
-      process.emitWarning(err instanceof Error ? err : new Error(String(err)))
+      process.emitWarning(toError(err))
     }
   }
 
@@ -373,7 +360,7 @@ export class ConnectionManager {
       try {
         listener(...args)
       } catch (err) {
-        process.emitWarning(err instanceof Error ? err : new Error(String(err)))
+        process.emitWarning(toError(err))
       }
     }
   }

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { defineQueue, defineTopic, validateName, wireName } from '../src/define.js'
-import { ConeyConfigError } from '../src/errors.js'
+import { defineQueue, defineTopic, validateName, wireName } from '../src/defs/define.js'
+import { ConeyConfigError } from '../src/core/errors.js'
 
 const throwsConfig = (fn: () => unknown, match?: RegExp) => {
   assert.throws(

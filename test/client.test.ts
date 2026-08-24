@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { createConey } from '../src/client.js'
-import { defineQueue, defineTopic } from '../src/define.js'
-import { ConeyClosedError, ConeyConfigError, ConeySchemaError } from '../src/errors.js'
+import { createConey } from '../src/client/coney.js'
+import { defineQueue, defineTopic } from '../src/defs/define.js'
+import { ConeyClosedError, ConeyConfigError, ConeySchemaError } from '../src/core/errors.js'
 
 const URL_OK = 'amqp://user:pw@localhost:5672/vhost'
 /** No I/O in this file: every client stays `idle` (or is closed while idle). */
@@ -29,6 +29,19 @@ describe('createConey validation', () => {
     throwsConfig(() => createConey({ url: URL_OK, reconnect: { maxDelayMs: 1 } }), /maxDelayMs/) // < initialDelayMs default
     throwsConfig(() => createConey({ url: URL_OK, publishTimeoutMs: -1 }), /publishTimeoutMs/)
     throwsConfig(() => createConey({ url: URL_OK, retry: { delays: [0] } }), /positive integers/)
+  })
+
+  it('rejects Infinity and beyond-setTimeout timeouts everywhere (Node clamps them to 1 ms)', async () => {
+    throwsConfig(() => createConey({ url: URL_OK, publishTimeoutMs: Infinity }), /publishTimeoutMs/)
+    throwsConfig(() => createConey({ url: URL_OK, publishTimeoutMs: 2 ** 31 }), /publishTimeoutMs/)
+    const mq = createConey({ url: URL_OK, log: false })
+    await assert.rejects(mq.open({ timeoutMs: Infinity }), ConeyConfigError)
+    await assert.rejects(mq.open({ timeoutMs: -5 }), ConeyConfigError)
+    const jobs = mq.queue(defineQueue({ name: 'jobs' }))
+    await assert.rejects(jobs.consume(() => {}, { timeoutMs: Infinity }), ConeyConfigError)
+    await assert.rejects(jobs.publish({ x: 1 }, { timeoutMs: Infinity }), ConeyConfigError)
+    await assert.rejects(mq.close({ drainMs: Infinity }), ConeyConfigError)
+    assert.equal(mq.state, 'idle') // every rejection happened before any I/O
   })
 
   it('accepts the kitchen sink without any I/O', () => {

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { bucketLogicalName, durationLabel, effectiveDelays, nextDelayMs } from '../src/retry.js'
+import { bucketLogicalName, durationLabel, effectiveDelays, nextDelayMs } from '../src/defs/retry.js'
 
 describe('durationLabel', () => {
   it('formats largest units first, omitting zero units', () => {

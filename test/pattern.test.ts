@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { matchTopicPattern } from '../src/mock.js'
+import { matchTopicPattern } from '../src/mock/pattern.js'
 
 describe('AMQP topic pattern matching (* = one word, # = zero or more)', () => {
   const cases: Array<[pattern: string, key: string, expected: boolean]> = [
@@ -36,4 +36,13 @@ describe('AMQP topic pattern matching (* = one word, # = zero or more)', () => {
       assert.equal(matchTopicPattern(pattern, key), expected)
     })
   }
+
+  it('stays fast on pathological many-# patterns (memoized, not exponential)', () => {
+    const key = Array.from({ length: 40 }, (_, i) => `w${i}`).join('.')
+    const start = Date.now()
+    // Un-memoized backtracking took ~1.5s on this exact input (and ~45s with 10 #s).
+    assert.equal(matchTopicPattern('#.#.#.#.#.#.#.#.x', key), false)
+    assert.equal(matchTopicPattern('#.#.#.#.#.#.#.#.#.#.w39', key), true)
+    assert.ok(Date.now() - start < 500, `took ${Date.now() - start} ms`)
+  })
 })

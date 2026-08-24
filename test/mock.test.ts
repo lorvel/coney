@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { createConeyMock } from '../src/mock.js'
-import { defineQueue, defineTopic, type Schema } from '../src/define.js'
-import { ConeyConfigError, ConeySchemaError, UnrecoverableError } from '../src/errors.js'
+import { createConeyMock } from '../src/mock/client.js'
+import { defineQueue, defineTopic, type Schema } from '../src/defs/define.js'
+import { ConeyClosedError, ConeyConfigError, ConeySchemaError, UnrecoverableError } from '../src/core/errors.js'
 
 interface Job {
   id: string
@@ -28,8 +28,30 @@ describe('createConeyMock: the Coney surface', () => {
     assert.deepEqual(await jobs.purgeDead(), { purged: 0 })
     assert.deepEqual(await mock.inspectRetry(), {})
     await mock.declare([defineQueue({ name: 'other' })])
+  })
+
+  it('close() mirrors the real lifecycle: state, gates and subscriptions', async () => {
+    const mock = createConeyMock({ prefix: 'test' })
+    const def = defineQueue({ name: 'jobs' })
+    const jobs = mock.queue(def)
+    const subscription = await jobs.consume(() => {})
     assert.deepEqual(await mock.close(), { drained: true, inFlight: 0 })
-    assert.equal(mock.state, 'open') // the mock never leaves 'open'
+    assert.deepEqual(await mock.close(), { drained: true, inFlight: 0 }) // idempotent
+    assert.equal(mock.state, 'closed')
+    assert.equal(subscription.active, false)
+    await assert.rejects(jobs.publish({ x: 1 }), ConeyClosedError)
+    await assert.rejects(jobs.consume(() => {}), ConeyClosedError)
+    await assert.rejects(jobs.inspect(), ConeyClosedError)
+    await assert.rejects(jobs.replayDead(), ConeyClosedError)
+    await assert.rejects(jobs.purgeDead(), ConeyClosedError)
+    await assert.rejects(mock.open(), ConeyClosedError)
+    await assert.rejects(mock.declare([def]), ConeyClosedError)
+    await assert.rejects(mock.inspectRetry(), ConeyClosedError)
+    // Delivery finds no consumers left.
+    await assert.rejects(mock.deliver(def, { x: 1 }), ConeyConfigError)
+    const events = defineTopic({ name: 'events' })
+    mock.queue(defineQueue({ name: 'listener', bindings: [{ topic: events, patterns: ['#'] }] }))
+    assert.deepEqual(await mock.deliverTopic(events, 'any.key', { x: 1 }), [])
   })
 
   it('caches handles per wire name and rejects conflicting defs', () => {
@@ -221,6 +243,28 @@ describe('mock deliverTopic: subscriptions and bound queues, in registration ord
     assert.equal(outcomes[0]?.outcome, 'retry') // the bound queue keeps its full ladder
     assert.equal(outcomes[1]?.outcome, 'ack')
     assert.deepEqual(await mock.deliverTopic(events, 'ku.updated', { any: 1 }), [])
+  })
+
+  it('a handler cancelling its own (or an earlier) subscription cannot skip later recipients', async () => {
+    const mock = createConeyMock()
+    const events = defineTopic({ name: 'events' })
+    const topic = mock.topic(events)
+    const calls: string[] = []
+    const subA = await topic.subscribe(['orders.#'], async () => {
+      calls.push('a')
+      await subA.cancel() // splices the live registrations array mid-delivery
+    })
+    await topic.subscribe(['orders.#'], () => {
+      calls.push('b')
+    })
+    const outcomes = await mock.deliverTopic(events, 'orders.created', {})
+    // The broker fans out BEFORE any cancel can land: both receive this delivery.
+    assert.deepEqual(calls, ['a', 'b'])
+    assert.equal(outcomes.length, 2)
+    assert.equal(subA.active, false)
+    // The next delivery reaches only B.
+    assert.equal((await mock.deliverTopic(events, 'orders.created', {})).length, 1)
+    assert.deepEqual(calls, ['a', 'b', 'b'])
   })
 
   it('a throwing subscription handler is dropped, not retried', async () => {

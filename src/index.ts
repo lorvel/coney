@@ -4,29 +4,36 @@
  * reconnection, graceful drain, and topic pub/sub.
  *
  * The public surface is specified in docs/api/coney.d.ts (CI enforces an exact
- * match) and its semantics in docs/design.md.
+ * match) and its semantics in docs/design.md. This is the only barrel file —
+ * internal code imports concrete modules directly.
  */
 
-export { createConey } from './client.js'
+export { createConey } from './client/coney.js'
 export type {
   Coney,
   ConeyOptions,
   ConeyState,
   OpenOptions,
   CloseOptions,
-  CloseResult,
   RetryBucketStats,
   QueueHandle,
   TopicHandle,
   QueueStats,
-} from './client.js'
-export type { ReconnectPolicy } from './connection.js'
-export type { RetryPolicy } from './retry.js'
-export { defineQueue, defineTopic } from './define.js'
-export type { AnyDef, QueueDef, QueueDefInput, Schema, TopicBinding, TopicDef, TopicDefInput } from './define.js'
-export type { HeaderValue, PublishOptions } from './codec.js'
-export type { ConsumeOptions, Handler, Message } from './consumer.js'
-export type { CancelOptions, SubscribeOptions, Subscription } from './subscription.js'
+} from './client/types.js'
+export type { ReconnectPolicy } from './connection/policy.js'
+export type { RetryPolicy } from './defs/retry.js'
+export { defineQueue, defineTopic } from './defs/define.js'
+export type { AnyDef, QueueDef, QueueDefInput, Schema, TopicBinding, TopicDef, TopicDefInput } from './defs/define.js'
+export type { HeaderValue, PublishOptions } from './core/codec.js'
+export type {
+  CancelOptions,
+  CloseResult,
+  ConsumeOptions,
+  Handler,
+  Message,
+  SubscribeOptions,
+  Subscription,
+} from './consume/types.js'
 export {
   ConeyError,
   ConeyUnavailableError,
@@ -36,8 +43,8 @@ export {
   ConeyTopologyError,
   ConeyConfigError,
   UnrecoverableError,
-} from './errors.js'
-export type { ConeyErrorCode } from './errors.js'
-export type { ConeyLogEvent, LogLevel } from './log.js'
-export { createConeyMock } from './mock.js'
-export type { ConeyMock, DeliverOptions, DeliveryOutcome, PublishedRecord } from './mock.js'
+} from './core/errors.js'
+export type { ConeyErrorCode } from './core/errors.js'
+export type { ConeyLogEvent, LogLevel } from './core/log.js'
+export { createConeyMock } from './mock/client.js'
+export type { ConeyMock, DeliverOptions, DeliveryOutcome, PublishedRecord } from './mock/types.js'

@@ -9,7 +9,7 @@ import {
   ConeyTopologyError,
   ConeyConfigError,
   UnrecoverableError,
-} from '../src/errors.js'
+} from '../src/core/errors.js'
 
 describe('errors', () => {
   it('every subclass carries its code, name and the base classes', () => {

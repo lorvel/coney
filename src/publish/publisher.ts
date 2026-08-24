@@ -4,33 +4,14 @@
  * (decision #3 — nothing is ever buffered), and `drain` back-pressure.
  */
 
-import type { ChannelModel, ConfirmChannel } from 'amqplib'
-import { ConeyPublishError, ConeyUnavailableError } from './errors.js'
-import type { EncodedMessage } from './codec.js'
-import type { ConnectionManager } from './connection.js'
+import type { ConfirmChannel } from 'amqplib'
+import { ConeyPublishError, ConeyUnavailableError } from '../core/errors.js'
+import type { EncodedMessage } from '../core/codec.js'
+import { raceTimeout } from '../core/time.js'
+import type { ChannelFactory, ConnectionManager } from '../connection/manager.js'
 
 interface PendingConfirm {
   reject: (err: Error) => void
-}
-
-/** Race a promise against a deadline; the loser's late rejection is swallowed. */
-function raceTimeout<T>(promise: Promise<T>, timeoutMs: number, makeError: () => Error): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      promise.catch(() => {})
-      reject(makeError())
-    }, timeoutMs)
-    promise.then(
-      (value) => {
-        clearTimeout(timer)
-        resolve(value)
-      },
-      (err: unknown) => {
-        clearTimeout(timer)
-        reject(err instanceof Error ? err : new Error(String(err)))
-      },
-    )
-  })
 }
 
 export class Publisher {
@@ -43,19 +24,20 @@ export class Publisher {
   constructor(private readonly manager: ConnectionManager) {}
 
   /** From the connection's `setup`: (re)create the shared confirm channel eagerly. */
-  async onSetup(model: ChannelModel): Promise<void> {
+  async onSetup(channels: ChannelFactory): Promise<void> {
     this.channel = null
     this.channelPromise = null
     this.drainGate = null
     try {
-      this.adoptChannel(await model.createConfirmChannel())
+      const channel = await channels.createConfirmChannel()
+      this.adoptChannel(channel)
     } catch {
       // Practically unreachable on a fresh connection; publishes recover lazily
       // through ensureChannel(). `setup` must never reject (spec §4).
     }
   }
 
-  /** Reject every in-flight confirm — the connection (or the channel) is gone. */
+  /** Reject every in-flight confirm — the connection (or the current channel) is gone. */
   rejectPending(err: ConeyUnavailableError): void {
     const entries = [...this.pending]
     this.pending.clear()
@@ -124,7 +106,14 @@ export class Publisher {
         // amqplib buffered the frame but asks us to pause: gate SUBSEQUENT publishes
         // until `drain` (spec §4). `close` releases the gate too — a dead channel
         // sends no `drain`, and the waiters will fail fast on the dead channel.
-        const gate = new Promise<void>((release) => {
+        // Whichever event fires must remove BOTH listeners: leaving the loser
+        // attached leaked one 'close' listener per back-pressure episode.
+        const gate = new Promise<void>((resolve) => {
+          const release = (): void => {
+            target.removeListener('drain', release)
+            target.removeListener('close', release)
+            resolve()
+          }
           target.once('drain', release)
           target.once('close', release)
         })
@@ -141,6 +130,14 @@ export class Publisher {
     this.channelPromise ??= this.manager.createConfirmChannel().then(
       (channel) => {
         this.channelPromise = null
+        // A create parked during an outage resolves only AFTER the reconnect's
+        // setup ran (amqplib resolves its waiters post-setup) — by then setup has
+        // already adopted a fresh channel. Adopting the late one would orphan the
+        // current channel; close it and keep the current one instead.
+        if (this.channel !== null) {
+          void channel.close().catch(() => {})
+          return this.channel
+        }
         this.adoptChannel(channel)
         return channel
       },
@@ -153,14 +150,15 @@ export class Publisher {
   }
 
   private adoptChannel(channel: ConfirmChannel): void {
-    this.manager.registerChannel(channel)
+    // No registerChannel here: both creation paths (manager lazy method, setup
+    // factory) already registered the safety listeners exactly once.
     channel.on('close', () => {
-      if (this.channel === channel) {
-        this.channel = null
-        this.drainGate = null
-      }
+      if (this.channel !== channel) return // a superseded channel must not touch current state
+      this.channel = null
+      this.drainGate = null
       // A solo channel death (no disconnect) must also fail outstanding confirms;
-      // after a connection loss this is a harmless double reject.
+      // after a connection loss this is a harmless double reject. Scoped to the
+      // CURRENT channel: every pending confirm was written on it.
       this.rejectPending(new ConeyUnavailableError('the publish channel closed before the broker confirmed'))
     })
     this.channel = channel

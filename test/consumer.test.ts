@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
-  contextOf,
-  republishOptions,
   runConsumePipeline,
   truncateReason,
   type DeliveryContext,
   type PipelineOutcome,
-} from '../src/consumer.js'
-import { UnrecoverableError } from '../src/errors.js'
+} from '../src/consume/pipeline.js'
+import { contextOf, republishOptions } from '../src/consume/delivery.js'
+import { UnrecoverableError } from '../src/core/errors.js'
 
 const context = (attempt = 1): DeliveryContext => ({
   id: 'm-1',

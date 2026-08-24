@@ -3,6 +3,8 @@
  * `switch (err.code)` without `instanceof`.
  */
 
+import { reasonOf } from './log.js'
+
 export type ConeyErrorCode = 'UNAVAILABLE' | 'CLOSED' | 'PUBLISH' | 'SCHEMA' | 'TOPOLOGY' | 'CONFIG'
 
 /** Base class of every error thrown by the library (user handler errors are never wrapped). */
@@ -76,4 +78,22 @@ export class UnrecoverableError extends Error {
     super(message, options)
     this.name = 'UnrecoverableError'
   }
+}
+
+/** Normalize an unknown thrown value into an Error (amqplib callbacks may reject with anything). */
+export function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err))
+}
+
+/**
+ * Build a {@link ConeyTopologyError} from a raw broker error:
+ * `<action> "<target>": <redacted reason>`, AMQP reply code extracted when present.
+ */
+export function topologyError(action: string, target: string, err: unknown): ConeyTopologyError {
+  const amqpCode = (err as { code?: unknown }).code
+  return new ConeyTopologyError(`${action} "${target}": ${reasonOf(err)}`, {
+    target,
+    ...(typeof amqpCode === 'number' ? { amqpCode } : {}),
+    cause: err,
+  })
 }

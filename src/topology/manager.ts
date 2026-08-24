@@ -4,13 +4,13 @@
  * Spec §3 describes the objects; §4 the iron law that a replay must never reject.
  */
 
-import type { Channel, ChannelModel } from 'amqplib'
-import { ConeyConfigError, ConeyTopologyError } from './errors.js'
-import type { AnyDef, QueueDef, TopicBinding } from './define.js'
-import { wireName } from './define.js'
-import { bucketLogicalName, durationLabel, effectiveDelays, type RetryPolicy } from './retry.js'
-import { redactText, type LogEmitter } from './log.js'
-import type { ConnectionManager } from './connection.js'
+import type { Channel } from 'amqplib'
+import { ConeyConfigError, ConeyTopologyError, topologyError } from '../core/errors.js'
+import { reasonOf, type LogEmitter } from '../core/log.js'
+import type { AnyDef, QueueDef } from '../defs/define.js'
+import { defsEqual, wireName } from '../defs/define.js'
+import { bucketLogicalName, durationLabel, effectiveDelays, type RetryPolicy } from '../defs/retry.js'
+import type { ChannelFactory, ConnectionManager } from '../connection/manager.js'
 
 interface RegisteredDef {
   def: AnyDef
@@ -19,40 +19,6 @@ interface RegisteredDef {
   error: ConeyTopologyError | null
   /** In-flight lazy assertion, so N concurrent first publishes assert once. */
   pending: Promise<void> | null
-}
-
-function retryEqual(a: RetryPolicy | false | undefined, b: RetryPolicy | false | undefined): boolean {
-  if (a === b) return true
-  if (a === false || b === false || a === undefined || b === undefined) return false
-  return a.delays.length === b.delays.length && a.delays.every((delay, i) => delay === b.delays[i])
-}
-
-function bindingsEqual(
-  a: readonly TopicBinding<unknown>[] | undefined,
-  b: readonly TopicBinding<unknown>[] | undefined,
-): boolean {
-  const left = a ?? []
-  const right = b ?? []
-  if (left.length !== right.length) return false
-  return left.every((bindingA, i) => {
-    const bindingB = right[i]
-    if (bindingB === undefined) return false
-    return (
-      bindingA.topic.name === bindingB.topic.name &&
-      bindingA.patterns.length === bindingB.patterns.length &&
-      bindingA.patterns.every((pattern, j) => pattern === bindingB.patterns[j])
-    )
-  })
-}
-
-/** Two defs may share a name only when they are interchangeable. */
-export function defsEqual(a: AnyDef, b: AnyDef): boolean {
-  if (a === b) return true
-  if (a.kind !== b.kind || a.name !== b.name || a.schema !== b.schema) return false
-  if (a.kind === 'queue' && b.kind === 'queue') {
-    return retryEqual(a.retry, b.retry) && bindingsEqual(a.bindings, b.bindings)
-  }
-  return true
 }
 
 export class TopologyManager {
@@ -131,7 +97,7 @@ export class TopologyManager {
    * cached on the entry (its callers get {@link ConeyTopologyError}) and skipped —
    * one bad def must not block the connection or the other defs (spec §4).
    */
-  async replayAll(model: ChannelModel): Promise<void> {
+  async replayAll(channels: ChannelFactory): Promise<void> {
     this.bucketsAsserted.clear()
     for (const entry of this.defs.values()) {
       entry.asserted = false
@@ -144,10 +110,7 @@ export class TopologyManager {
     for (const entry of this.defs.values()) {
       if (entry.asserted) continue // topics can be asserted through a queue's bindings
       try {
-        if (channel === null) {
-          channel = await model.createChannel()
-          this.args.manager.registerChannel(channel)
-        }
+        channel ??= await channels.createChannel()
         await this.assertEntry(channel, entry, queues, exchanges)
       } catch {
         // assertEntry logged and cached the failure; the channel died with it.
@@ -198,24 +161,16 @@ export class TopologyManager {
       entry.asserted = true
       entry.error = null
     } catch (err) {
-      const amqpCode = (err as { code?: unknown }).code
-      const topologyError = new ConeyTopologyError(
-        `failed to assert the topology of "${wire}": ${redactText(err instanceof Error ? err.message : String(err))}`,
-        {
-          target: wire,
-          ...(typeof amqpCode === 'number' ? { amqpCode } : {}),
-          cause: err,
-        },
-      )
-      entry.error = topologyError
+      const failure = topologyError('failed to assert the topology of', wire, err)
+      entry.error = failure
       this.args.emit({
         event: 'coney.topology_failed',
         level: 'error',
         target: wire,
-        reason: redactText(err instanceof Error ? err.message : String(err)),
-        ...(typeof amqpCode === 'number' ? { amqpCode } : {}),
+        reason: reasonOf(err),
+        ...(failure.amqpCode !== undefined ? { amqpCode: failure.amqpCode } : {}),
       })
-      throw topologyError
+      throw failure
     }
   }
 

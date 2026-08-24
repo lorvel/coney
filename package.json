@@ -37,7 +37,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "typecheck": "tsc -p tsconfig.test.json",
     "typecheck:design": "tsc -p docs/api",
     "test": "tsx --test test/*.test.ts",

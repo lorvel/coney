@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { defsEqual } from '../src/topology.js'
-import { defineQueue, defineTopic } from '../src/define.js'
+import { defsEqual } from '../src/defs/define.js'
+import { defineQueue, defineTopic } from '../src/defs/define.js'
 
 const schema = { parse: (input: unknown) => input as { id: string } }
 

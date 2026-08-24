@@ -13,7 +13,7 @@ export interface PublishOptions {
   readonly headers?: Readonly<Record<string, HeaderValue>>
   /** `deliveryMode: 2`. Default `true`; `false` for transient fan-out where loss on broker restart is acceptable. */
   readonly persistent?: boolean
-  /** Overrides {@link ConeyOptions.publishTimeoutMs} for this call. */
+  /** Overrides {@link ConeyOptions.publishTimeoutMs} for this call (finite, <= 2^31-1). */
   readonly timeoutMs?: number
 }
 
@@ -49,10 +49,7 @@ export function encodeMessage(args: {
   now: Date
 }): EncodedMessage {
   const { body, type, appId, options, now } = args
-  const json = JSON.stringify(body)
-  if (json === undefined) {
-    throw new ConeyConfigError('body is not JSON-serializable (undefined, a function, or a symbol)')
-  }
+  const json = stringifyBody(body)
   const headers: Record<string, unknown> = {}
   if (options?.headers !== undefined) {
     for (const [key, value] of Object.entries(options.headers)) {
@@ -77,7 +74,35 @@ export function encodeMessage(args: {
   }
 }
 
+/**
+ * JSON-encode a body, mapping EVERY non-serializable shape to {@link ConeyConfigError}:
+ * `undefined`/function/symbol (stringify returns undefined) as well as circular
+ * structures, `BigInt` values and throwing `toJSON()` (stringify throws) — a raw
+ * `TypeError` must never escape the library's error taxonomy.
+ */
+export function stringifyBody(body: unknown): string {
+  let json: string | undefined
+  try {
+    json = JSON.stringify(body)
+  } catch (err) {
+    throw new ConeyConfigError('body is not JSON-serializable (circular structure, BigInt, or a throwing toJSON)', {
+      cause: err,
+    })
+  }
+  if (json === undefined) {
+    throw new ConeyConfigError('body is not JSON-serializable (undefined, a function, or a symbol)')
+  }
+  return json
+}
+
 /** Decode a JSON body. Throws `SyntaxError` on invalid JSON (the consumer maps it to a `decode` dead-letter). */
 export function decodeJson(content: Buffer): unknown {
   return JSON.parse(content.toString('utf8'))
+}
+
+/** Validate a topic routing key (publish and mock delivery). */
+export function validateRoutingKey(routingKey: unknown): asserts routingKey is string {
+  if (typeof routingKey !== 'string' || routingKey.length === 0) {
+    throw new ConeyConfigError('routingKey must be a non-empty string')
+  }
 }

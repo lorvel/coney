@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { DEFAULT_RECONNECT_POLICY, toRecoveryOptions } from '../src/connection.js'
+import { DEFAULT_RECONNECT_POLICY, toRecoveryOptions } from '../src/connection/policy.js'
 
 describe('reconnect policy', () => {
   it('spec defaults: 1s → 30s, factor 2, jitter 0.2, no give-up', () => {

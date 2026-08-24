@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import amqplib from 'amqplib'
 import type { ConeyLogEvent } from '../../src/index.js'
-import { durationLabel } from '../../src/retry.js'
+import { durationLabel } from '../../src/defs/retry.js'
 
 export const BROKER_URL = process.env['RABBITMQ_URL']
 export const MGMT_URL = process.env['RABBITMQ_MGMT_URL']

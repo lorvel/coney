@@ -7,38 +7,14 @@
  */
 
 import type { Channel, ConsumeMessage } from 'amqplib'
-// Type-only: no runtime cycle (client.ts imports the runtimes as values).
-import type { CloseResult } from './client.js'
-import type { TopicDef } from './define.js'
-import type { LogEmitter } from './log.js'
-import {
-  BaseConsumer,
-  contextOf,
-  reasonOf,
-  runConsumePipeline,
-  truncateReason,
-  type ChannelFactory,
-  type Handler,
-} from './consumer.js'
-
-export interface SubscribeOptions {
-  /** Max messages in flight for this subscription. Default `1` (in-order processing). */
-  readonly prefetch?: number
-  /** Same semantics as {@link ConsumeOptions.timeoutMs}, except the outcome is "drop" (subscriptions have no retry). */
-  readonly timeoutMs?: number
-}
-
-export interface CancelOptions {
-  /** Max wait for in-flight handlers. Default `10_000` ms. */
-  readonly drainMs?: number
-}
-
-export interface Subscription {
-  /** `false` once cancelled or after the client closed. */
-  readonly active: boolean
-  /** Stop receiving (survives reconnects until called). Resolves after in-flight handlers settle or `drainMs` passes. Idempotent. */
-  cancel(options?: CancelOptions): Promise<CloseResult>
-}
+import { decodeJson } from '../core/codec.js'
+import { reasonOf, type LogEmitter } from '../core/log.js'
+import type { ChannelFactory } from '../connection/manager.js'
+import type { TopicDef } from '../defs/define.js'
+import type { Handler, SubscribeOptions } from './types.js'
+import { runConsumePipeline, truncateReason } from './pipeline.js'
+import { contextOf } from './delivery.js'
+import { BaseConsumer } from './runtime.js'
 
 interface TopicSubscriptionArgs<T> {
   def: TopicDef<T>
@@ -113,7 +89,7 @@ export class TopicSubscription<T> extends BaseConsumer {
     let body: unknown
     let decodeError: unknown = null
     try {
-      body = JSON.parse(raw.content.toString('utf8'))
+      body = decodeJson(raw.content)
     } catch (err) {
       decodeError = err
     }
@@ -174,16 +150,7 @@ export class TopicSubscription<T> extends BaseConsumer {
   }
 
   private ack(channel: Channel, raw: ConsumeMessage): void {
-    try {
-      channel.ack(raw)
-    } catch (err) {
-      this.emit({
-        event: 'coney.ack_failed',
-        level: 'warn',
-        queue: this.queueName ?? '',
-        messageId: typeof raw.properties.messageId === 'string' ? raw.properties.messageId : '',
-        reason: reasonOf(err),
-      })
-    }
+    const messageId = typeof raw.properties.messageId === 'string' ? raw.properties.messageId : ''
+    this.safeAck(channel, raw, this.queueName ?? '', messageId)
   }
 }

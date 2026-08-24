@@ -1,6 +1,6 @@
 /** Definitions: pure, frozen values describing queues and topics — no I/O, usable by any client. */
 
-import { ConeyConfigError } from './errors.js'
+import { ConeyConfigError, ConeySchemaError } from '../core/errors.js'
 import type { RetryPolicy } from './retry.js'
 
 /** Structural schema: anything with a throwing `parse` (zod, valibot `v.parser`, arktype, a hand-written guard). */
@@ -136,4 +136,82 @@ export function defineTopic<T = unknown>(def: TopicDefInput<T>): TopicDef<T> {
     name: def.name,
     ...(def.schema !== undefined ? { schema: def.schema } : {}),
   })
+}
+
+// ── Def interchangeability ──
+
+function retryEqual(a: RetryPolicy | false | undefined, b: RetryPolicy | false | undefined): boolean {
+  if (a === b) return true
+  if (a === false || b === false || a === undefined || b === undefined) return false
+  return a.delays.length === b.delays.length && a.delays.every((delay, i) => delay === b.delays[i])
+}
+
+function bindingsEqual(
+  a: readonly TopicBinding<unknown>[] | undefined,
+  b: readonly TopicBinding<unknown>[] | undefined,
+): boolean {
+  const left = a ?? []
+  const right = b ?? []
+  if (left.length !== right.length) return false
+  return left.every((bindingA, i) => {
+    const bindingB = right[i]
+    if (bindingB === undefined) return false
+    return (
+      bindingA.topic.name === bindingB.topic.name &&
+      bindingA.patterns.length === bindingB.patterns.length &&
+      bindingA.patterns.every((pattern, j) => pattern === bindingB.patterns[j])
+    )
+  })
+}
+
+/**
+ * Two defs may share a name only when they are interchangeable. Lives beside the
+ * def shapes on purpose: a new def field (e.g. a future queue `type`) must be
+ * reflected here in the same file, or two different defs would silently pass.
+ */
+export function defsEqual(a: AnyDef, b: AnyDef): boolean {
+  if (a === b) return true
+  if (a.kind !== b.kind || a.name !== b.name || a.schema !== b.schema) return false
+  if (a.kind === 'queue' && b.kind === 'queue') {
+    return retryEqual(a.retry, b.retry) && bindingsEqual(a.bindings, b.bindings)
+  }
+  return true
+}
+
+// ── Shared argument validation — the real client and the mock run the SAME checks, so the test double cannot drift ──
+
+export function assertQueueDef(def: unknown): void {
+  if (def === null || typeof def !== 'object' || (def as AnyDef).kind !== 'queue') {
+    throw new ConeyConfigError('queue() needs a def created by defineQueue()')
+  }
+}
+
+export function assertTopicDef(def: unknown): void {
+  if (def === null || typeof def !== 'object' || (def as AnyDef).kind !== 'topic') {
+    throw new ConeyConfigError('topic() needs a def created by defineTopic()')
+  }
+}
+
+export function assertAnyDef(def: unknown): void {
+  const kind = def === null || typeof def !== 'object' ? undefined : (def as AnyDef).kind
+  if (kind !== 'queue' && kind !== 'topic') {
+    throw new ConeyConfigError('defs must be created by defineQueue()/defineTopic()')
+  }
+}
+
+/** The publish-side schema gate: parsed body out, {@link ConeySchemaError} (cause = the schema's own error) on failure. */
+export function parseBody<T>(def: QueueDef<T> | TopicDef<T>, body: T): unknown {
+  if (def.schema === undefined) return body
+  try {
+    return def.schema.parse(body)
+  } catch (err) {
+    throw new ConeySchemaError(`the body published to "${def.name}" failed its schema`, { cause: err })
+  }
+}
+
+/** The `name` option of a client/mock (AMQP `appId` + first consumer-tag segment). */
+export function validateInstanceName(name: unknown): void {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new ConeyConfigError('name must be a non-empty string')
+  }
 }
