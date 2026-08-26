@@ -26,7 +26,7 @@ import { TopologyManager } from '../topology/manager.js'
 import { Publisher } from '../publish/publisher.js'
 import { encodeMessage, validateRoutingKey, type PublishOptions } from '../core/codec.js'
 import { makeEmitter, reasonOf, type LogEmitter } from '../core/log.js'
-import { raceTimeout, validateDurationMs } from '../core/time.js'
+import { validateDurationMs, withinDeadline } from '../core/time.js'
 import {
   validateConsumeOptions,
   validateHandler,
@@ -47,6 +47,7 @@ import type {
   ConeyOptions,
   ConeyState,
   OpenOptions,
+  OpsOptions,
   QueueHandle,
   QueueStats,
   RetryBucketStats,
@@ -205,19 +206,36 @@ class ConeyClient implements Coney {
     return handle
   }
 
-  async declare(defs: readonly AnyDef[]): Promise<void> {
+  async declare(defs: readonly AnyDef[], options?: OpsOptions): Promise<void> {
     if (this.phaseOverride !== null) throw new ConeyClosedError('the client is closing or closed')
+    const deadline = this.opsDeadline(options)
     for (const def of defs) this.topology.register(def)
-    await this.manager.waitForOpen()
-    for (const def of defs) await this.topology.ensure(def)
+    await this.manager.waitForOpen(options?.timeoutMs)
+    for (const def of defs) await this.ensureWithinBudget(def, deadline)
   }
 
-  async inspectRetry(): Promise<RetryBucketStats> {
+  async inspectRetry(options?: OpsOptions): Promise<RetryBucketStats> {
     if (this.phaseOverride !== null) throw new ConeyClosedError('the client is closing or closed')
+    const deadline = this.opsDeadline(options)
     if (this.topology.knownBuckets().size === 0) return Object.freeze({})
-    await this.manager.waitForOpen()
-    const stats = await this.topology.inspectRetry()
+    await this.manager.waitForOpen(options?.timeoutMs)
+    const inspecting = this.topology.inspectRetry()
+    const stats = await withinDeadline(
+      inspecting,
+      deadline,
+      () =>
+        new ConeyUnavailableError(
+          `inspectRetry did not complete within ${String(options?.timeoutMs)} ms`,
+        ),
+    )
     return Object.freeze(stats)
+  }
+
+  /** Validated budget of an admin/ops call as an absolute deadline (`undefined` = none). */
+  private opsDeadline(options: OpsOptions | undefined): number | undefined {
+    if (options?.timeoutMs === undefined) return undefined
+    validateDurationMs(options.timeoutMs, 'timeoutMs')
+    return Date.now() + options.timeoutMs
   }
 
   private buildQueueHandle<T>(def: QueueDef<T>, wire: string): QueueHandle<T> {
@@ -243,9 +261,9 @@ class ConeyClient implements Coney {
           options,
         }),
       consume: (handler, options) => this.startQueueConsumer(def, wire, handler, options),
-      inspect: (): Promise<QueueStats> => inspectQueue(ops, wire),
+      inspect: (options): Promise<QueueStats> => inspectQueue(ops, wire, options),
       replayDead: (options) => replayDeadQueue(ops, def, wire, options),
-      purgeDead: () => purgeDeadQueue(ops, wire),
+      purgeDead: (options) => purgeDeadQueue(ops, wire, options),
     }
   }
 
@@ -274,12 +292,17 @@ class ConeyClient implements Coney {
     }
   }
 
+  /**
+   * Track the promise the CALLER gets, not the inner task: `.finally` runs before
+   * the derived promise settles, so close()'s drain loop finds the set already
+   * empty instead of spinning one redundant extra round on settled entries.
+   */
   private publishTo<T>(args: PublishArgs<T>): Promise<void> {
-    const task = this.runPublish(args)
-    this.activePublishes.add(task)
-    return task.finally(() => {
-      this.activePublishes.delete(task)
+    const tracked: Promise<void> = this.runPublish(args).finally(() => {
+      this.activePublishes.delete(tracked)
     })
+    this.activePublishes.add(tracked)
+    return tracked
   }
 
   /**
@@ -329,22 +352,21 @@ class ConeyClient implements Coney {
   }
 
   /**
-   * `ensure` raced against the caller's remaining budget, per caller and from the
-   * OUTSIDE: the shared in-flight assert must not be rejected for everyone by one
-   * caller's timeout, and a timeout must never be cached as a topology failure.
-   * An abandoned assert is safe — its channel closes in `assertNow`'s finally
-   * whenever the parked create eventually settles, and a late success just marks
-   * the def asserted for future callers.
+   * `ensure` raced against the caller's remaining budget (`undefined` = none), per
+   * caller and from the OUTSIDE: the shared in-flight assert must not be rejected
+   * for everyone by one caller's timeout, and a timeout must never be cached as a
+   * topology failure. An abandoned assert is safe — its channel closes in
+   * `assertNow`'s finally whenever the parked create eventually settles, and a late
+   * success just marks the def asserted for future callers.
    */
-  private async ensureWithinBudget(def: AnyDef, deadline: number): Promise<void> {
-    const remaining = Math.max(0, deadline - Date.now())
+  private async ensureWithinBudget(def: AnyDef, deadline: number | undefined): Promise<void> {
     const ensure = this.topology.ensure(def)
-    await raceTimeout(
+    await withinDeadline(
       ensure,
-      remaining,
+      deadline,
       () =>
         new ConeyUnavailableError(
-          `the topology assert of "${def.name}" did not complete within the publish timeout`,
+          `the topology assert of "${def.name}" did not complete within the allowed time`,
         ),
     )
   }
@@ -384,6 +406,9 @@ class ConeyClient implements Coney {
     // (A runtime whose attach is still in flight has no channel here; its
     // post-attach check tears the late channel down as soon as the attach settles.)
     await Promise.all(runtimes.map((runtime) => runtime.releaseChannel()))
+    // Drop the runtimes: each one holds the user's handler and everything its
+    // closure captured, and a closed client can never re-attach them.
+    this.consumers.clear()
     await this.manager.closeConnection()
     this.phaseOverride = 'closed'
     this.emit({ event: 'coney.closed', level: 'info', drained, inFlight })

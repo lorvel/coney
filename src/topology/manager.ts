@@ -130,16 +130,26 @@ export class TopologyManager {
     }
   }
 
-  /** Depth of every known bucket (asserts them first so `checkQueue` cannot 404). */
+  /**
+   * Depth of every known bucket (asserts them first so `checkQueue` cannot 404).
+   * Wrapped like every other broker path: a bucket someone else declared with a
+   * different `x-message-ttl` must surface as {@link ConeyTopologyError} (target +
+   * `amqpCode`), never as a raw amqplib error.
+   */
   async inspectRetry(): Promise<Record<string, number>> {
     const stats: Record<string, number> = {}
     if (this.buckets.size === 0) return stats
     const channel = await this.args.manager.createChannel()
     try {
       for (const [label, delayMs] of this.buckets) {
-        await this.assertBucket(channel, delayMs)
-        const reply = await channel.checkQueue(this.bucketWire(delayMs))
-        stats[label] = reply.messageCount
+        const wire = this.bucketWire(delayMs)
+        try {
+          await this.assertBucket(channel, delayMs)
+          const reply = await channel.checkQueue(wire)
+          stats[label] = reply.messageCount
+        } catch (err) {
+          throw topologyError('could not inspect the retry bucket', wire, err)
+        }
       }
     } finally {
       await channel.close().catch(() => {})

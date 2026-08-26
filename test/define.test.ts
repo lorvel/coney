@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { defineQueue, defineTopic, validateName, wireName } from '../src/defs/define.js'
+import { createConey } from '../src/client/coney.js'
 import { ConeyConfigError } from '../src/core/errors.js'
 
 const throwsConfig = (fn: () => unknown, match?: RegExp) => {
@@ -123,5 +124,25 @@ describe('defineTopic', () => {
 
   it('applies the same name rules', () => {
     throwsConfig(() => defineTopic({ name: 'amq.topic' }), /reserved prefix/)
+  })
+})
+
+describe('validateRetryPolicy guards the whole value, not just delays', () => {
+  it('a non-object retry is a ConeyConfigError, never a raw TypeError', () => {
+    // Reachable from JS and from JSON-driven config: the types do not stop it.
+    throwsConfig(() => defineQueue({ name: 'jobs', retry: null as never }), /delays/)
+    throwsConfig(() => defineQueue({ name: 'jobs', retry: 0 as never }), /delays/)
+    throwsConfig(() => defineQueue({ name: 'jobs', retry: 'fast' as never }), /delays/)
+    throwsConfig(() => createConey({ url: 'amqp://h', retry: 0 as never }), /delays/)
+    throwsConfig(() => createConey({ url: 'amqp://h', retry: 'fast' as never }), /delays/)
+    // `createConey` reads `retry` with `??`, so null there means "unset" and takes
+    // the default ladder — only defineQueue treats it as an invalid value.
+    assert.equal(createConey({ url: 'amqp://h', retry: null as never, log: false }).state, 'idle')
+  })
+
+  it('still accepts a real ladder and `false`', () => {
+    const ladder = defineQueue({ name: 'jobs', retry: { delays: [] } }).retry
+    assert.deepEqual(ladder === false ? null : ladder?.delays, [])
+    assert.equal(defineQueue({ name: 'jobs', retry: false }).retry, false)
   })
 })

@@ -16,7 +16,16 @@ describe('redactUrl', () => {
 
   it('leaves URLs without credentials untouched', () => {
     assert.equal(redactUrl('amqp://home-dev:5672/lorvel'), 'amqp://home-dev:5672/lorvel')
-    assert.equal(redactUrl('amqp://user@home-dev'), 'amqp://user@home-dev')
+  })
+
+  it('masks a whole password-less userinfo — token brokers put the secret there', () => {
+    assert.equal(redactUrl('amqp://user@home-dev'), 'amqp://***@home-dev')
+    assert.equal(
+      redactUrl('amqps://eyJhbGciOiJIUzI1NiJ9@rabbit.example.com/vhost'),
+      'amqps://***@rabbit.example.com/vhost',
+    )
+    // The two redactors must not disagree about the same string.
+    assert.equal(redactUrl('amqp://user@home-dev'), redactText('amqp://user@home-dev'))
   })
 
   it('falls back to the text redactor for unparseable input', () => {

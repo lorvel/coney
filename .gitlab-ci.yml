@@ -60,12 +60,20 @@ test-integration:
     - yarn test:integration
 
 # Publish to the project's GitLab npm registry, only when a git tag is pushed.
-# package.json "version" must match the tag (`yarn release` tags from it).
+# package.json "version" must match the tag (`yarn release` tags from it) — checked
+# here rather than trusted, so a `git tag` without the version bump cannot ship a
+# package whose version does not match the commit it was built from.
 publish:
   stage: publish
   rules:
     - if: '$CI_COMMIT_TAG'
   script:
+    - |
+      PKG_TAG="v$(node -p "require('./package.json').version")"
+      if [ "$PKG_TAG" != "$CI_COMMIT_TAG" ]; then
+        echo "refusing to publish: package.json is $PKG_TAG but the tag is $CI_COMMIT_TAG" >&2
+        exit 1
+      fi
     - |
       {
         echo "@lorvel:registry=https://gitlab.com/api/v4/projects/${CI_PROJECT_ID}/packages/npm/"

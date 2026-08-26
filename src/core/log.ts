@@ -80,15 +80,23 @@ export type ConeyLogEvent =
 export type LogEmitter = (event: ConeyLogEvent) => void
 
 /**
- * Redact the password of an `amqp(s)://` URL (`amqp://user:***@host/vhost`).
+ * Redact the credentials of an `amqp(s)://` URL (`amqp://user:***@host/vhost`).
  * Applied when events are CREATED, so every sink — including custom ones — sees
  * redacted URLs. Falls back to a regex when the URL does not parse.
+ *
+ * A userinfo with no password is redacted WHOLE (`amqp://***@host`): brokers that
+ * authenticate by token carry the secret in the username, so keeping it would leak
+ * the credential that {@link redactText} already masks for the same shape.
  */
 export function redactUrl(url: string): string {
   try {
     const parsed = new URL(url)
     if (parsed.password !== '') {
       parsed.password = '***'
+      return parsed.toString()
+    }
+    if (parsed.username !== '') {
+      parsed.username = '***'
       return parsed.toString()
     }
     return url

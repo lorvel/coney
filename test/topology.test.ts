@@ -2,8 +2,35 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { defsEqual } from '../src/defs/define.js'
 import { defineQueue, defineTopic } from '../src/defs/define.js'
+import { TopologyManager } from '../src/topology/manager.js'
+import { ConeyConfigError, ConeyTopologyError } from '../src/core/errors.js'
+import type { ConeyLogEvent } from '../src/core/log.js'
+import type { RetryPolicy } from '../src/defs/retry.js'
+import { FakeChannel, amqpError, fakeFactory, fakeManager } from './fakes.js'
 
 const schema = { parse: (input: unknown) => input as { id: string } }
+
+const NO_RETRY: RetryPolicy = { delays: [] }
+
+function makeTopology(args: {
+  channel: FakeChannel
+  prefix?: string
+  defaultRetry?: RetryPolicy
+  emit?: (event: ConeyLogEvent) => void
+  onCreate?: () => void
+}): TopologyManager {
+  return new TopologyManager({
+    prefix: args.prefix,
+    defaultRetry: args.defaultRetry ?? NO_RETRY,
+    manager: fakeManager({
+      createChannel: async () => {
+        args.onCreate?.()
+        return args.channel.asChannel()
+      },
+    }),
+    emit: args.emit ?? ((): void => {}),
+  })
+}
 
 describe('defsEqual', () => {
   it('equal by value: same name, schema reference, ladder and bindings', () => {
@@ -57,5 +84,137 @@ describe('defsEqual', () => {
         defineQueue({ name: 'jobs', retry: { delays: [10_000] } }),
       ),
     )
+  })
+})
+
+describe('TopologyManager.ensure', () => {
+  it('asserts a queue, its dead queue and its buckets exactly once for N concurrent callers', async () => {
+    const channel = new FakeChannel()
+    let created = 0
+    const topology = makeTopology({
+      channel,
+      defaultRetry: { delays: [10_000] },
+      onCreate: () => {
+        created += 1
+      },
+    })
+    const jobs = defineQueue({ name: 'jobs' })
+    await Promise.all([topology.ensure(jobs), topology.ensure(jobs), topology.ensure(jobs)])
+    assert.equal(created, 1, 'the in-flight assert is shared')
+    assert.deepEqual(channel.calls, [
+      'assertQueue:jobs',
+      'assertQueue:jobs.dead',
+      'assertExchange:retry.10s',
+      'assertQueue:retry.10s',
+      'bindQueue:retry.10s|retry.10s|',
+    ])
+    await topology.ensure(jobs)
+    assert.equal(created, 1, 'an asserted def never touches the broker again')
+  })
+
+  it('asserts the bound topic and one binding per pattern', async () => {
+    const channel = new FakeChannel()
+    const topology = makeTopology({ channel, prefix: 'test' })
+    const events = defineTopic({ name: 'events' })
+    const notify = defineQueue({
+      name: 'notify',
+      retry: false,
+      bindings: [{ topic: events, patterns: ['task.*', 'ku.#'] }],
+    })
+    await topology.ensure(notify)
+    assert.deepEqual(channel.calls, [
+      'assertQueue:test.notify',
+      'assertQueue:test.notify.dead',
+      'assertExchange:test.events',
+      'bindQueue:test.notify|test.events|task.*',
+      'bindQueue:test.notify|test.events|ku.#',
+    ])
+  })
+
+  it('rejects two different defs sharing a name', () => {
+    const topology = makeTopology({ channel: new FakeChannel() })
+    topology.register(defineQueue({ name: 'jobs', retry: { delays: [10] } }))
+    assert.throws(
+      () => topology.register(defineQueue({ name: 'jobs', retry: { delays: [20] } })),
+      ConeyConfigError,
+    )
+  })
+})
+
+describe('TopologyManager.replayAll: one bad def must not take the connection down', () => {
+  it('never rejects, logs the failure and caches it for that def only', async () => {
+    const channel = new FakeChannel()
+    channel.failures.set('assertQueue:test.bad', amqpError('PRECONDITION_FAILED - x-args', 406))
+    const logged: ConeyLogEvent[] = []
+    const topology = makeTopology({ channel, prefix: 'test', emit: (event) => logged.push(event) })
+    const bad = defineQueue({ name: 'bad', retry: false })
+    const good = defineQueue({ name: 'good', retry: false })
+    topology.register(bad)
+    topology.register(good)
+
+    // The iron law (spec §4): amqplib treats a rejected `setup` as a failed
+    // connection and would retry forever.
+    await topology.replayAll(fakeFactory({ createChannel: async () => channel.asChannel() }))
+
+    const failures = logged.filter((event) => event.event === 'coney.topology_failed')
+    assert.equal(failures.length, 1)
+    assert.deepEqual(
+      { target: failures[0]?.target, amqpCode: failures[0]?.amqpCode },
+      { target: 'test.bad', amqpCode: 406 },
+    )
+    // The good def came up on the replacement channel and needs no further assert.
+    await topology.ensure(good)
+    const err = await topology.ensure(bad).then(
+      () => null,
+      (reason: unknown) => reason,
+    )
+    assert.ok(err instanceof ConeyTopologyError)
+    assert.equal(err.target, 'test.bad')
+    assert.equal(err.amqpCode, 406)
+  })
+})
+
+describe('TopologyManager.inspectRetry', () => {
+  it('reports the depth of every known bucket', async () => {
+    const channel = new FakeChannel()
+    channel.depths.set('test.retry.10s', 4)
+    const topology = makeTopology({ channel, prefix: 'test', defaultRetry: { delays: [10_000] } })
+    topology.register(defineQueue({ name: 'jobs' }))
+    assert.deepEqual(await topology.inspectRetry(), { '10s': 4 })
+    assert.ok(channel.closed)
+  })
+
+  it('maps a bucket someone else declared differently onto ConeyTopologyError', async () => {
+    const channel = new FakeChannel()
+    channel.failures.set(
+      'assertQueue:test.retry.10s',
+      amqpError('PRECONDITION_FAILED - inequivalent arg x-message-ttl', 406),
+    )
+    const topology = makeTopology({ channel, prefix: 'test', defaultRetry: { delays: [10_000] } })
+    topology.register(defineQueue({ name: 'jobs' }))
+    const err = await topology.inspectRetry().then(
+      () => null,
+      (reason: unknown) => reason,
+    )
+    assert.ok(err instanceof ConeyTopologyError, `expected TOPOLOGY, got ${String(err)}`)
+    assert.equal(err.code, 'TOPOLOGY')
+    assert.equal(err.target, 'test.retry.10s')
+    assert.equal(err.amqpCode, 406)
+  })
+
+  it('wraps a failing checkQueue too', async () => {
+    const channel = new FakeChannel()
+    channel.failures.set('checkQueue:retry.500ms', amqpError('NOT_FOUND', 404))
+    const topology = makeTopology({ channel, defaultRetry: { delays: [500] } })
+    topology.register(defineQueue({ name: 'jobs' }))
+    await assert.rejects(topology.inspectRetry(), ConeyTopologyError)
+  })
+
+  it('is a no-op without buckets', async () => {
+    const channel = new FakeChannel()
+    const topology = makeTopology({ channel })
+    topology.register(defineQueue({ name: 'jobs', retry: false }))
+    assert.deepEqual(await topology.inspectRetry(), {})
+    assert.deepEqual(channel.calls, [])
   })
 })

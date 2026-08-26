@@ -130,7 +130,9 @@ Invariants worth knowing:
 
 Reconnection is built on amqplib's `recovery` mode with one backoff policy (defaults: 1 s initial, ×2, ±20 % jitter, 30 s cap, infinite attempts) that also covers the **initial** connect — a service booting while the broker restarts converges on its own; `open({ timeoutMs })` rejects when you want a boot deadline, but the loop keeps going until `close()`. After every (re)connect the library replays the registered topology and re-attaches every consumer. Exclusive subscription queues cannot survive the connection; they are re-bound as new queues (messages published in the gap are lost — use a durable bound queue when that matters).
 
-While disconnected, `publish()` waits for the connection **up to a bounded budget** (`publishTimeoutMs`, default 5 s, per-call override; `0` = fail fast) and then rejects with `ConeyUnavailableError`. Nothing is ever buffered in memory beyond that wait: a resolved `publish()` means the broker confirmed, a rejected one means it may not have — there is no third state where the library holds your message and a crash silently drops it.
+While disconnected, `publish()` waits for the connection **up to a bounded budget** (`publishTimeoutMs`, default 5 s, per-call override) and then rejects with `ConeyUnavailableError`. That budget is ONE deadline for the whole pipeline — the connection wait, a first-use topology assert, back-pressure **and the broker confirm** — so a broker that blocks the connection under a resource alarm (accepting frames, confirming nothing) fails the publish instead of parking it forever. `0` therefore means _fail at once_ literally: a confirm always needs some budget, so use a small positive value if you want fail-fast-while-disconnected with a real confirm wait. Nothing is ever buffered in memory beyond that wait: a resolved `publish()` means the broker confirmed, a rejected one means it may not have — there is no third state where the library holds your message and a crash silently drops it.
+
+Every connection-dependent admin call (`declare`, `inspectRetry`, `inspect`, `replayDead`, `purgeDead`) takes the same escape hatch through `{ timeoutMs }`. Without it they wait for the connection as long as the reconnect policy allows, exactly like `open()` with no deadline.
 
 `close({ drainMs })` shuts down in order: stop accepting publishes → cancel consumers → wait up to `drainMs` for in-flight handlers (then abort their `signal`) → wait for outstanding publisher confirms → close the connection. It returns `{ drained, inFlight }` and never throws for a drain timeout.
 
@@ -176,8 +178,8 @@ The authoritative reference is [docs/api/coney.d.ts](docs/api/coney.d.ts) — ev
 | `coney.queue(def)` / `.topic(def)`               | Typed handles (cached per name); topology is asserted lazily on first use and after every reconnect.                    |
 | `coney.open(options?)`                           | Connect now; `{ timeoutMs }` bounds the wait. Idempotent.                                                               |
 | `coney.close(options?)`                          | Graceful shutdown; `{ drainMs }` bounds the handler drain. Returns `CloseResult`.                                       |
-| `coney.declare(defs)`                            | Eagerly assert topology to fail fast at boot instead of at the first publish.                                           |
-| `coney.inspectRetry()`                           | Depth of every shared retry bucket, keyed by duration label.                                                            |
+| `coney.declare(defs, options?)`                  | Eagerly assert topology to fail fast at boot instead of at the first publish. `{ timeoutMs }` bounds the whole call.    |
+| `coney.inspectRetry(options?)`                   | Depth of every shared retry bucket, keyed by duration label. `{ timeoutMs }` bounds the whole call.                     |
 | `coney.state` / `.prefix` / `.resolveName(name)` | Lifecycle state (`idle → connecting → open ⇄ reconnecting → closing → closed`), configured prefix, logical → wire name. |
 
 `ConeyOptions`: `url` (required) · `prefix` · `name` (AMQP `appId` + consumer-tag segment) · `log` (one typed callback, see below) · `reconnect` (partial `ReconnectPolicy`) · `publishTimeoutMs` · `retry` (default ladder) · `socketOptions` (passed to amqplib untouched — TLS etc.).
@@ -198,8 +200,9 @@ Defs are client-free: keep them in a shared catalog module and pass them to any 
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `queue.publish(body, options?)`                      | Schema-validated, confirm-backed publish. `PublishOptions`: `messageId`, `headers`, `persistent`, `timeoutMs`.       |
 | `queue.consume(handler, options?)`                   | Attach a consumer on its own channel; `ConsumeOptions`: `prefetch` (default 1), `timeoutMs`. Returns `Subscription`. |
-| `queue.inspect()`                                    | `{ ready, consumers, dead }` — passive, no topology changes.                                                         |
+| `queue.inspect(options?)`                            | `{ ready, consumers, dead }` — passive, no topology changes.                                                         |
 | `queue.replayDead({ limit? })` / `queue.purgeDead()` | Move dead letters back to the main queue (attempt reset, `messageId` kept) / delete them.                            |
+| … all four take `{ timeoutMs }`                      | ONE budget for the call (connection wait + round-trips); `replayDead` stops between messages, keeping what it moved. |
 | `topic.publish(routingKey, body, options?)`          | Publish to the exchange; no matching binding → confirmed and dropped.                                                |
 | `topic.subscribe(patterns, handler, options?)`       | Exclusive per-instance subscription (`*` = one word, `#` = zero or more). Returns `Subscription`.                    |
 

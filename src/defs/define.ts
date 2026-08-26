@@ -80,9 +80,15 @@ export function wireName(prefix: string | undefined, name: string): string {
   return prefix === undefined ? name : `${prefix}.${name}`
 }
 
-/** Validate a {@link RetryPolicy}: `delays` must be an array of positive integers (empty allowed). */
+/**
+ * Validate a {@link RetryPolicy}: an object whose `delays` is an array of positive
+ * integers (empty allowed). The non-object guard is not redundant with the types —
+ * `retry: null` from JS or JSON-driven config reaches here, and a raw `TypeError`
+ * would escape the {@link ConeyConfigError} taxonomy.
+ */
 export function validateRetryPolicy(retry: RetryPolicy, what: string): void {
-  if (!Array.isArray(retry.delays)) {
+  const value: unknown = retry
+  if (value === null || typeof value !== 'object' || !Array.isArray(retry.delays)) {
     throw new ConeyConfigError(`${what}.delays must be an array of positive integers`)
   }
   for (const delay of retry.delays) {

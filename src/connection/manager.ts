@@ -9,7 +9,16 @@ import amqplib from 'amqplib'
 import type { Channel, ChannelModel, ConfirmChannel, RecoveringChannelModel } from 'amqplib'
 import { ConeyClosedError, ConeyUnavailableError, toError } from '../core/errors.js'
 import { redactText, redactUrl, type LogEmitter } from '../core/log.js'
+import { raceTimeout } from '../core/time.js'
 import { toRecoveryOptions, type ReconnectPolicy } from './policy.js'
+
+/**
+ * How long `close()` waits for an in-flight hand-over connect to land so it can
+ * close the model amqplib is about to return. Short on purpose: the probe just
+ * proved the broker reachable, so the connect either resolves in milliseconds or
+ * is stuck behind an outage that no waiting here will resolve.
+ */
+const HANDOVER_CLOSE_GRACE_MS = 500
 
 /** Manager phases; the client overlays `closing`/`closed` while `close()` runs. */
 export type ConnectionPhase = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed'
@@ -55,6 +64,8 @@ export class ConnectionManager {
 
   private started = false
   private recovering: RecoveringChannelModel | null = null
+  /** The hand-over connect while amqplib has not returned its model yet (see `closeConnection`). */
+  private handover: Promise<RecoveringChannelModel> | null = null
   private closeRequested = false
   private disconnectedAt = 0
   private openWaiters: OpenWaiter[] = []
@@ -136,6 +147,7 @@ export class ConnectionManager {
         setup: (model: ChannelModel) => this.runSetup(model),
       },
     })
+    this.handover = promise
     promise.then(
       (recovering) => this.handleFirstConnect(recovering),
       (err: unknown) => this.handleInitialFailure(err),
@@ -253,11 +265,37 @@ export class ConnectionManager {
     if (this.recovering !== null) {
       // Stops the reconnect loop immediately, even mid-backoff (verified on 1.2.0/2.0.1).
       await this.recovering.close().catch(() => {})
+    } else if (this.handover !== null) {
+      await this.closePendingHandover(this.handover)
     }
-    // Phase 1 (the probe loop) exits at its next closeRequested check; a recovery
-    // connect already in flight is closed by handleFirstConnect the moment amqplib
-    // hands it over (bounded zombie window).
+    // Phase 1 (the probe loop) exits at its next closeRequested check.
     this.phaseValue = 'closed'
+  }
+
+  /**
+   * `close()` during the hand-over window, when amqplib has not returned the
+   * recovering model yet and there is therefore nothing to call `close()` on.
+   * Wait a short grace for it to land and close it right there; handleFirstConnect
+   * closes a later arrival too, so nothing is leaked once the connect settles.
+   *
+   * RESIDUAL LIMITATION (amqplib 2.0.1, documented in design.md §4): if the broker
+   * stays down, this connect never settles — its recovery core keeps a reconnect
+   * timer armed, and neither `RecoveringPromiseModel` nor that core is reachable
+   * through amqplib's public exports, so it cannot be stopped from here. The probe
+   * loop makes the window milliseconds wide; closing it for good needs coney to own
+   * the reconnect loop (decision #17's documented fallback).
+   */
+  private async closePendingHandover(handover: Promise<RecoveringChannelModel>): Promise<void> {
+    const closing = handover.then(
+      (recovering) => recovering.close().catch(() => {}),
+      () => {}, // handleInitialFailure already reported it
+    )
+    const graced = raceTimeout(
+      closing,
+      HANDOVER_CLOSE_GRACE_MS,
+      () => new ConeyUnavailableError('the hand-over connect is still in flight'),
+    )
+    await graced.catch(() => {})
   }
 
   private async runSetup(model: ChannelModel): Promise<void> {
@@ -287,6 +325,7 @@ export class ConnectionManager {
   }
 
   private handleFirstConnect(recovering: RecoveringChannelModel): void {
+    this.handover = null
     this.recovering = recovering
     this.attachRecoveringListeners(recovering)
     if (this.closeRequested) {
@@ -299,6 +338,7 @@ export class ConnectionManager {
   }
 
   private handleInitialFailure(err: unknown): void {
+    this.handover = null
     if (this.closeRequested) return // close() during the initial connect rejects the promise; expected
     this.phaseValue = 'closed'
     this.emit({

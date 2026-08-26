@@ -1,6 +1,6 @@
 {
   "name": "@lorvel/coney",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "An opinionated RabbitMQ toolkit for Node.js: work queues with broker-held retry ladders and dead-letter queues, publisher confirms, automatic reconnection, graceful drain, and topic pub/sub.",
   "keywords": [
     "rabbitmq",

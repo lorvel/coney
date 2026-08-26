@@ -51,6 +51,12 @@ export interface CloseOptions {
   drainMs?: number
 }
 
+/** The bounded-wait escape hatch of the connection-dependent admin/ops calls. */
+export interface OpsOptions {
+  /** ONE budget for the whole call — connection wait AND the broker round-trips — before {@link ConeyUnavailableError} (finite, <= 2^31-1). Default: wait per {@link ReconnectPolicy}, exactly like {@link Coney.open} without one. */
+  timeoutMs?: number
+}
+
 /** Depth of every retry bucket declared through this client, keyed by duration label (`"10s"`, `"1m"`, …). */
 export type RetryBucketStats = Readonly<Record<string, number>>
 
@@ -86,10 +92,10 @@ export interface Coney {
   topic<T>(def: TopicDef<T>): TopicHandle<T>
 
   /** Eagerly assert the topology of `defs` (queues, buckets, dead queues, exchanges, bindings) to fail fast at boot ({@link ConeyTopologyError}) instead of at the first publish. */
-  declare(defs: readonly AnyDef[]): Promise<void>
+  declare(defs: readonly AnyDef[], options?: OpsOptions): Promise<void>
 
   /** Depth of every retry bucket known to this client. Buckets are shared by all queues. */
-  inspectRetry(): Promise<RetryBucketStats>
+  inspectRetry(options?: OpsOptions): Promise<RetryBucketStats>
 }
 
 export interface QueueStats {
@@ -118,13 +124,15 @@ export interface QueueHandle<T> {
   consume(handler: Handler<T>, options?: ConsumeOptions): Promise<Subscription>
 
   /** Passive inspection (no topology changes). */
-  inspect(): Promise<QueueStats>
+  inspect(options?: OpsOptions): Promise<QueueStats>
 
-  /** Move messages from `<name>.dead` back to the main queue (attempt reset, `messageId` kept), up to `limit` (default: all present at call time). */
-  replayDead(options?: { readonly limit?: number }): Promise<{ readonly replayed: number }>
+  /** Move messages from `<name>.dead` back to the main queue (attempt reset, `messageId` kept), up to `limit` (default: all present at call time). On `timeoutMs` the replay STOPS between messages: what was already moved stays moved. */
+  replayDead(
+    options?: OpsOptions & { readonly limit?: number },
+  ): Promise<{ readonly replayed: number }>
 
   /** Delete every message in `<name>.dead`. */
-  purgeDead(): Promise<{ readonly purged: number }>
+  purgeDead(options?: OpsOptions): Promise<{ readonly purged: number }>
 }
 
 export interface TopicHandle<T> {

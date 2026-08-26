@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 During 0.x, a MINOR bump may contain breaking changes (called out here); PATCH
 releases are fixes only.
 
+## [0.2.0] - 2026-08-26
+
+### Added
+
+- `OpsOptions` — every connection-dependent admin call (`declare`, `inspectRetry`,
+  `QueueHandle.inspect` / `replayDead` / `purgeDead`) now accepts `{ timeoutMs }`,
+  ONE budget covering the connection wait and the broker round-trips. Omitting it
+  keeps the previous behaviour: wait as long as the reconnect policy allows, the
+  same default `open()` has. `replayDead` enforces its budget BETWEEN messages, so
+  a caller that gives up actually stops the replay.
+
+### Changed
+
+Behaviour changes a caller can observe (0.x MINOR, called out per the policy above):
+
+- `publishTimeoutMs: 0` now means _fail at once_ literally. The budget covers the
+  broker confirm, and a confirm always needs some budget, so a publish with `0`
+  rejects without writing the frame instead of publishing and then waiting for the
+  confirm indefinitely. Use a small positive budget for fail-fast-while-
+  disconnected with a real confirm wait.
+- `reconnect.maxAttempts` now maps onto amqplib's `maxRetries - 1`, so a reconnect
+  makes the same number of attempts as the boot loop (previously one more).
+- `reconnect.factor` must be finite; `Infinity` used to pass validation and was
+  then silently replaced by amqplib's default of 2.
+- `redactUrl` masks a password-less userinfo whole (`amqp://***@host`).
+
+### Fixed
+
+- **A publish could hang forever.** The `timeoutMs` budget was spent acquiring a
+  channel and never covered the back-pressure gate or the broker confirm, so a
+  broker that blocks the connection under a resource alarm — accepting frames and
+  confirming nothing — parked `publish()` indefinitely and with it `close()`. The
+  deadline now covers every wait in the pipeline. When the budget is already spent
+  the frame is not written at all, so a caller is never left wondering whether the
+  message went out.
+- **A lost connection is no longer reported as a broker refusal.** amqplib's
+  `ConfirmChannel` flushes unconfirmed callbacks from a listener registered in its
+  own constructor, ahead of coney's, so a channel death reached callers as
+  `ConeyPublishError` ("the broker rejected the publish") — a permanent failure
+  that told callers to drop a message they should have retried. In-flight
+  publishes now reject with `ConeyUnavailableError` as the spec requires.
+- A publish parked on the back-pressure gate resumed on the channel that armed it
+  even when that channel had died in the meantime (`close` releases the gate too),
+  failing a caller whose budget was untouched; the current channel is now re-read
+  after the wait.
+- `reconnect.maxAttempts` meant a different number of attempts at boot than on a
+  reconnect: it counts ATTEMPTS but was passed straight through to amqplib's
+  `maxRetries`, which counts the retries AFTER the first one. `reconnect.factor`
+  must now be finite — amqplib silently replaced `Infinity` with its own default,
+  so the two loops used different curves for the same policy.
+- `close()` during the hand-over to amqplib's recovery connect now waits a short
+  grace and closes the model as soon as amqplib returns it. The residual case (a
+  broker that never comes back) is documented in `docs/design.md` §4: amqplib 2.x
+  exposes no handle for it.
+- `redactUrl` left a password-less userinfo untouched, so brokers that carry the
+  secret in the username (token auth) leaked it into log events and error
+  messages; the whole userinfo is now masked, matching `redactText`.
+- `TopologyManager.inspectRetry` let raw amqplib errors escape — a retry bucket
+  declared elsewhere with a different `x-message-ttl` now surfaces as
+  `ConeyTopologyError` with `target` and `amqpCode`, like every other broker path.
+- `defineQueue({ retry: null })` threw a raw `TypeError` instead of
+  `ConeyConfigError`.
+- `close()` no longer keeps every consumer runtime (and the handler closure it
+  captured) referenced after the client is closed, and its publish-drain loop no
+  longer spins one redundant round on already-settled promises.
+- Mock fidelity: `deliverTopic` delivered a bound queue's message to EVERY
+  competing consumer while the broker (and `deliver`) round-robins one — a
+  double-processing bug could pass a green suite; `published` recorded the
+  pre-JSON body rather than the wire body handlers actually receive; and
+  `deliver` was the only entry point that did not validate its def.
+- The GitLab `publish` job now verifies that `package.json` matches the pushed
+  tag instead of only documenting the requirement, and `yarn release` refuses to
+  tag a dirty tree, an existing tag or unpushed commits.
+
+### Tests
+
+- Unit coverage for `Publisher` and `TopologyManager` against a fake amqplib
+  channel that reproduces the three behaviours coney depends on: a confirm
+  callback that never fires, a `close` that flushes unconfirmed callbacks before
+  coney's own listener, and `publish` returning `false` until `drain`.
+
 ## [0.1.0] - 2026-08-24
 
 The first release: the complete v0.1 surface described in `docs/design.md`.

@@ -35,6 +35,20 @@ export function validateDurationMs(
   }
 }
 
+/**
+ * Race a promise against an OPTIONAL absolute deadline (`undefined` = none). The
+ * shape every `timeoutMs`-bearing operation needs, so one budget covers the whole
+ * call instead of only its first await.
+ */
+export function withinDeadline<T>(
+  promise: Promise<T>,
+  deadline: number | undefined,
+  makeError: () => Error,
+): Promise<T> {
+  if (deadline === undefined) return promise
+  return raceTimeout(promise, Math.max(0, deadline - Date.now()), makeError)
+}
+
 /** Race a promise against a deadline; the loser's late rejection is swallowed. */
 export function raceTimeout<T>(
   promise: Promise<T>,

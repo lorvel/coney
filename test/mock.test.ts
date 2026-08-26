@@ -335,3 +335,77 @@ describe('mock deliverTopic: subscriptions and bound queues, in registration ord
     assert.match((outcomes[1] as { reason: string }).reason, /^schema: /)
   })
 })
+
+describe('mock fidelity: the drift the double exists to prevent', () => {
+  it('records the body as it reaches the WIRE, matching what deliver hands a handler', async () => {
+    const mock = createConeyMock()
+    const jobs = defineQueue({ name: 'jobs' })
+    let seen: unknown
+    await mock.queue(jobs).consume((message) => {
+      seen = message.body
+    })
+    const body = { at: new Date('2026-08-24T00:00:00.000Z'), missing: undefined, keep: 1 }
+    await mock.queue(jobs).publish(body)
+    await mock.deliver(jobs, body)
+    // A Date is an ISO string on the wire and an undefined field is simply gone —
+    // `published` must not show a shape no consumer will ever see.
+    assert.deepEqual(mock.published[0]?.body, { at: '2026-08-24T00:00:00.000Z', keep: 1 })
+    assert.deepEqual(mock.published[0]?.body, seen)
+  })
+
+  it('deliverTopic gives a bound queue ONE copy, round-robin across its competing consumers', async () => {
+    const mock = createConeyMock()
+    const events = defineTopic({ name: 'events' })
+    const audit = defineQueue({
+      name: 'audit',
+      retry: false,
+      bindings: [{ topic: events, patterns: ['task.#'] }],
+    })
+    const calls: string[] = []
+    await mock.queue(audit).consume(() => {
+      calls.push('worker-a')
+    })
+    await mock.queue(audit).consume(() => {
+      calls.push('worker-b')
+    })
+    // The broker delivers each message to exactly one consumer of the queue; a mock
+    // that fans out lets a double-processing bug pass a green test suite.
+    assert.equal((await mock.deliverTopic(events, 'task.updated', {})).length, 1)
+    assert.equal((await mock.deliverTopic(events, 'task.updated', {})).length, 1)
+    assert.deepEqual(calls, ['worker-a', 'worker-b'])
+  })
+
+  it('deliverTopic still fans out across distinct queues and subscriptions', async () => {
+    const mock = createConeyMock()
+    const events = defineTopic({ name: 'events' })
+    const bind = { topic: events, patterns: ['#'] }
+    await mock.queue(defineQueue({ name: 'a', retry: false, bindings: [bind] })).consume(() => {})
+    await mock.queue(defineQueue({ name: 'b', retry: false, bindings: [bind] })).consume(() => {})
+    await mock.topic(events).subscribe(['#'], () => {})
+    await mock.topic(events).subscribe(['#'], () => {})
+    assert.equal((await mock.deliverTopic(events, 'x', {})).length, 4)
+  })
+
+  it('deliver validates its def like every other entry point', async () => {
+    const mock = createConeyMock()
+    await assert.rejects(mock.deliver(undefined as never, {}), ConeyConfigError)
+    await assert.rejects(
+      mock.deliver(defineTopic({ name: 'events' }) as never, {}),
+      ConeyConfigError,
+    )
+    await assert.rejects(
+      mock.deliverTopic(defineQueue({ name: 'jobs' }) as never, 'k', {}),
+      ConeyConfigError,
+    )
+  })
+
+  it('rejects an ops timeoutMs the real client would reject (Node clamps it to 1 ms)', async () => {
+    const mock = createConeyMock()
+    const jobs = mock.queue(defineQueue({ name: 'jobs' }))
+    await assert.rejects(mock.declare([], { timeoutMs: Infinity }), ConeyConfigError)
+    await assert.rejects(mock.inspectRetry({ timeoutMs: 2 ** 31 }), ConeyConfigError)
+    await assert.rejects(jobs.inspect({ timeoutMs: -1 }), ConeyConfigError)
+    await assert.rejects(jobs.replayDead({ timeoutMs: Infinity }), ConeyConfigError)
+    await assert.rejects(jobs.purgeDead({ timeoutMs: Infinity }), ConeyConfigError)
+  })
+})

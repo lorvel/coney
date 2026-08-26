@@ -15,6 +15,7 @@ export type {
   ConeyState,
   OpenOptions,
   CloseOptions,
+  OpsOptions,
   RetryBucketStats,
   QueueHandle,
   TopicHandle,

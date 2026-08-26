@@ -21,6 +21,7 @@ import {
   wireName,
 } from '../defs/define.js'
 import { DEFAULT_RETRY, effectiveDelays } from '../defs/retry.js'
+import { validateDurationMs } from '../core/time.js'
 import {
   encodeMessage,
   stringifyBody,
@@ -46,6 +47,7 @@ import type {
   CloseOptions,
   ConeyState,
   OpenOptions,
+  OpsOptions,
   QueueHandle,
   QueueStats,
   RetryBucketStats,
@@ -74,6 +76,13 @@ interface TopicRegistration {
 }
 
 type Registration = QueueRegistration | TopicRegistration
+
+/**
+ * One recipient of a topic publish, in registration order: a subscription gets its
+ * own copy, a bound queue gets one copy shared by whatever competes on it.
+ */
+type DeliverySlot =
+  { kind: 'topic'; registration: TopicRegistration } | { kind: 'queue'; wire: string }
 
 const EMPTY_CLOSE: CloseResult = Object.freeze({ drained: true, inFlight: 0 })
 const EMPTY_STATS: QueueStats = Object.freeze({ ready: 0, consumers: 0, dead: 0 })
@@ -146,29 +155,29 @@ class ConeyMockClient implements ConeyMock {
     return handle
   }
 
-  async declare(defs: readonly AnyDef[]): Promise<void> {
+  async declare(defs: readonly AnyDef[], options?: OpsOptions): Promise<void> {
     this.ensureNotClosed()
+    assertOpsOptions(options)
     for (const def of defs) this.registerDef(def)
   }
 
-  async inspectRetry(): Promise<RetryBucketStats> {
+  async inspectRetry(options?: OpsOptions): Promise<RetryBucketStats> {
     this.ensureNotClosed()
+    assertOpsOptions(options)
     return Object.freeze({})
   }
 
   async deliver<T>(def: QueueDef<T>, body: T, options?: DeliverOptions): Promise<DeliveryOutcome> {
+    assertQueueDef(def)
     const wire = wireName(this.prefix, def.name)
     const candidates = this.registrations.filter(
       (registration): registration is QueueRegistration =>
         registration.kind === 'queue' && registration.wire === wire && registration.active,
     )
-    if (candidates.length === 0) {
+    const registration = this.pickCompeting(wire, candidates)
+    if (registration === undefined) {
       throw new ConeyConfigError(`no consumer is registered for the queue "${def.name}"`)
     }
-    // Competing consumers on one queue: the broker round-robins, so does the mock.
-    const index = this.roundRobin.get(wire) ?? 0
-    this.roundRobin.set(wire, index + 1)
-    const registration = candidates[index % candidates.length] as QueueRegistration
     return this.runMockPipeline({
       schema: registration.def.schema,
       handler: registration.handler,
@@ -186,30 +195,23 @@ class ConeyMockClient implements ConeyMock {
     body: T,
     options?: DeliverOptions,
   ): Promise<readonly DeliveryOutcome[]> {
+    assertTopicDef(def)
     validateRoutingKey(routingKey)
     const topicWire = wireName(this.prefix, def.name)
-    const outcomes: DeliveryOutcome[] = []
     // Snapshot: a handler cancelling a subscription mid-delivery splices the live
     // array, which would shift the next registration into the consumed slot and
     // skip it — the broker fans out BEFORE any cancel can land. The `active`
     // check below still honors cancels of registrations not yet reached.
+    const competing = new Map<string, QueueRegistration[]>()
+    const slots: DeliverySlot[] = []
     for (const registration of [...this.registrations]) {
       if (!registration.active) continue
       if (registration.kind === 'topic') {
         if (registration.wire !== topicWire) continue
         if (!registration.patterns.some((pattern) => matchTopicPattern(pattern, routingKey)))
           continue
-        // Subscriptions carry the topic's payload type: gate with the topic's schema.
-        const outcome = await this.runMockPipeline({
-          schema: registration.def.schema,
-          handler: registration.handler,
-          timeoutMs: registration.options?.timeoutMs,
-          delays: null,
-          routingKey,
-          body,
-          options,
-        })
-        outcomes.push(outcome)
+        // Every subscription has its own exclusive queue: the exchange fans out.
+        slots.push({ kind: 'topic', registration })
         continue
       }
       const bindings = registration.def.bindings ?? []
@@ -219,6 +221,34 @@ class ConeyMockClient implements ConeyMock {
           binding.patterns.some((pattern) => matchTopicPattern(pattern, routingKey)),
       )
       if (!bound) continue
+      // A bound queue receives ONE copy however many consumers compete on it —
+      // the slot marks its position, the group holds the candidates to rotate over.
+      const group = competing.get(registration.wire)
+      if (group === undefined) {
+        competing.set(registration.wire, [registration])
+        slots.push({ kind: 'queue', wire: registration.wire })
+      } else {
+        group.push(registration)
+      }
+    }
+    const outcomes: DeliveryOutcome[] = []
+    for (const slot of slots) {
+      if (slot.kind === 'topic') {
+        // Subscriptions carry the topic's payload type: gate with the topic's schema.
+        const outcome = await this.runMockPipeline({
+          schema: slot.registration.def.schema,
+          handler: slot.registration.handler,
+          timeoutMs: slot.registration.options?.timeoutMs,
+          delays: null,
+          routingKey,
+          body,
+          options,
+        })
+        outcomes.push(outcome)
+        continue
+      }
+      const registration = this.pickCompeting(slot.wire, competing.get(slot.wire) ?? [])
+      if (registration === undefined) continue
       // Bound queues validate on consume with the QUEUE's schema (spec §4).
       const outcome = await this.runMockPipeline({
         schema: registration.def.schema,
@@ -232,6 +262,20 @@ class ConeyMockClient implements ConeyMock {
       outcomes.push(outcome)
     }
     return outcomes
+  }
+
+  /**
+   * Competing consumers on one queue: the broker hands each message to exactly
+   * one of them, round-robin — so does the mock, on both delivery paths.
+   */
+  private pickCompeting(
+    wire: string,
+    candidates: readonly QueueRegistration[],
+  ): QueueRegistration | undefined {
+    if (candidates.length === 0) return undefined
+    const index = this.roundRobin.get(wire) ?? 0
+    this.roundRobin.set(wire, index + 1)
+    return candidates[index % candidates.length]
   }
 
   reset(): void {
@@ -290,16 +334,19 @@ class ConeyMockClient implements ConeyMock {
           active: true,
         })
       },
-      inspect: async () => {
+      inspect: async (options) => {
         this.ensureNotClosed()
+        assertOpsOptions(options)
         return EMPTY_STATS
       },
-      replayDead: async () => {
+      replayDead: async (options) => {
         this.ensureNotClosed()
+        assertOpsOptions(options)
         return Object.freeze({ replayed: 0 })
       },
-      purgeDead: async () => {
+      purgeDead: async (options) => {
         this.ensureNotClosed()
+        assertOpsOptions(options)
         return Object.freeze({ purged: 0 })
       },
     }
@@ -351,19 +398,23 @@ class ConeyMockClient implements ConeyMock {
     options: PublishOptions | undefined
   }): void {
     const body = parseBody(args.def, args.body)
-    encodeMessage({
+    const encoded = encodeMessage({
       body,
       type: args.typeProp,
       appId: this.name,
       options: args.options,
       now: new Date(),
     })
+    // Round-tripped through the SAME encoder a real publish uses, so `published`
+    // shows what actually reaches the broker (a Date is an ISO string, undefined
+    // fields are gone) — recording the pre-JSON object hid exactly the drift the
+    // delivery round-trip in runMockPipeline exists to catch.
+    const wireBody: unknown = JSON.parse(encoded.content.toString('utf8'))
     this.records.push(
       Object.freeze({
         target: Object.freeze({ kind: args.kind, name: args.wire }),
         routingKey: args.routingKey,
-        // The schema-parsed body — exactly what a real publish puts on the wire.
-        body,
+        body: wireBody,
         options: args.options ?? {},
       }),
     )
@@ -426,6 +477,14 @@ class ConeyMockClient implements ConeyMock {
     })
     return toDeliveryOutcome(outcome)
   }
+}
+
+/**
+ * The ops budget the real client validates, checked here too: a `timeoutMs` Node
+ * would silently clamp must fail in tests, not only in production.
+ */
+function assertOpsOptions(options: OpsOptions | undefined): void {
+  if (options?.timeoutMs !== undefined) validateDurationMs(options.timeoutMs, 'timeoutMs')
 }
 
 function toDeliveryOutcome(outcome: PipelineOutcome): DeliveryOutcome {

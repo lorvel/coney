@@ -2,6 +2,11 @@
  * The one shared confirm channel for every publish: broker confirms (resolve on
  * ack, {@link ConeyPublishError} on nack), a bounded wait while disconnected
  * (decision #3 — nothing is ever buffered), and `drain` back-pressure.
+ *
+ * Every wait in here is on ONE deadline handed down by the client (spec §4):
+ * channel (re)creation, the back-pressure gate AND the broker confirm share it.
+ * A broker that accepts the frame and never confirms — a disk/memory alarm blocks
+ * the connection without dropping it — must fail the publish, not park it forever.
  */
 
 import type { ConfirmChannel } from 'amqplib'
@@ -73,32 +78,89 @@ export class Publisher {
     encoded: EncodedMessage
     timeoutMs: number
   }): Promise<void> {
-    let channel = this.channel
-    if (channel === null) {
-      // The setup-created channel is gone (solo channel death, or a disconnect right
-      // after the open wait) — recreate it within the same bounded-wait budget.
-      if (args.timeoutMs === 0) {
-        throw new ConeyUnavailableError(
-          'the publish channel is not available, and the allowed wait is 0 ms',
-        )
-      }
-      channel = await raceTimeout(
-        this.ensureChannel(),
-        args.timeoutMs,
-        () => new ConeyUnavailableError(`no publish channel within ${args.timeoutMs} ms`),
+    const deadline = Date.now() + args.timeoutMs
+    // Back-pressure gate FIRST, then read the channel: `close` releases the gate
+    // too, so a channel captured before the wait can be the dead one that armed it
+    // while a healthy replacement is already in place.
+    await this.awaitDrain(args, deadline)
+    const target = await this.acquireChannel(args, deadline)
+    await this.awaitConfirm(target, args, deadline)
+  }
+
+  /** Park while another publish is draining, never past the caller's deadline. */
+  private async awaitDrain(args: { timeoutMs: number }, deadline: number): Promise<void> {
+    while (this.drainGate !== null) {
+      const gate = this.drainGate
+      const remaining = Math.max(0, deadline - Date.now())
+      await raceTimeout(
+        gate,
+        remaining,
+        () =>
+          new ConeyUnavailableError(
+            `the publish channel was still back-pressured after ${args.timeoutMs} ms`,
+          ),
       )
     }
-    while (this.drainGate !== null) {
-      await this.drainGate
+  }
+
+  /** The current confirm channel, recreated within the remaining budget when it is gone. */
+  private async acquireChannel(
+    args: { timeoutMs: number },
+    deadline: number,
+  ): Promise<ConfirmChannel> {
+    const current = this.channel
+    if (current !== null) return current
+    // The setup-created channel is gone (solo channel death, or a disconnect right
+    // after the open wait) — recreate it within the same bounded-wait budget.
+    const remaining = Math.max(0, deadline - Date.now())
+    if (remaining === 0) {
+      throw new ConeyUnavailableError(
+        args.timeoutMs === 0
+          ? 'the publish channel is not available, and the allowed wait is 0 ms'
+          : `no publish channel within ${args.timeoutMs} ms`,
+      )
     }
-    const target = channel
-    await new Promise<void>((resolve, reject) => {
-      const entry: PendingConfirm = {
-        reject: (err) => {
-          this.pending.delete(entry)
-          reject(err)
-        },
+    return raceTimeout(
+      this.ensureChannel(),
+      remaining,
+      () => new ConeyUnavailableError(`no publish channel within ${args.timeoutMs} ms`),
+    )
+  }
+
+  /** Write the frame and resolve on the broker's confirm — within what is left of the budget. */
+  private awaitConfirm(
+    target: ConfirmChannel,
+    args: { exchange: string; routingKey: string; encoded: EncodedMessage; timeoutMs: number },
+    deadline: number,
+  ): Promise<void> {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      // Nothing is written: a caller whose budget is already spent must not be left
+      // wondering whether the message went out (spec §4 — `0` = fail at once).
+      return Promise.reject(
+        new ConeyUnavailableError(
+          `the publish budget of ${args.timeoutMs} ms was spent before "${args.routingKey}" could be confirmed`,
+        ),
+      )
+    }
+    return new Promise<void>((resolve, reject) => {
+      let settled = false
+      const finish = (err?: Error): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.pending.delete(entry)
+        if (err === undefined) resolve()
+        else reject(err)
       }
+      const entry: PendingConfirm = { reject: finish }
+      const timer = setTimeout(() => {
+        finish(
+          new ConeyUnavailableError(
+            `the broker did not confirm the publish to "${args.routingKey}" within ${args.timeoutMs} ms`,
+          ),
+        )
+      }, remaining)
       this.pending.add(entry)
       let keepWriting: boolean
       try {
@@ -110,19 +172,35 @@ export class Publisher {
           (err) => {
             // Broker confirm: ack (err == null) or nack. A settled promise ignores
             // the late callback amqplib may fire after a disconnect rejection.
-            this.pending.delete(entry)
-            if (err == null) resolve()
-            else
-              reject(
-                new ConeyPublishError(`the broker rejected the publish to "${args.routingKey}"`, {
-                  cause: err,
-                }),
+            if (err == null) {
+              finish()
+              return
+            }
+            // amqplib's ConfirmChannel registers its OWN `close` listener in the
+            // channel constructor, so a connection/channel loss flushes every
+            // unconfirmed callback through here BEFORE coney's listener runs —
+            // at this instant a nack and a dead channel look identical. Decide one
+            // microtask later, once that synchronous dispatch is done: a nack
+            // leaves the channel current, a close does not. Spec §4 — publishes in
+            // flight when the connection drops reject ConeyUnavailableError (state
+            // unknown, the caller may retry), never the permanent ConeyPublishError.
+            queueMicrotask(() => {
+              finish(
+                this.channel === target
+                  ? new ConeyPublishError(
+                      `the broker rejected the publish to "${args.routingKey}"`,
+                      { cause: err },
+                    )
+                  : new ConeyUnavailableError(
+                      'the publish channel closed before the broker confirmed',
+                      { cause: err },
+                    ),
               )
+            })
           },
         )
       } catch (err) {
-        this.pending.delete(entry)
-        reject(
+        finish(
           new ConeyUnavailableError('the publish channel failed while writing', { cause: err }),
         )
         return
@@ -133,14 +211,14 @@ export class Publisher {
         // sends no `drain`, and the waiters will fail fast on the dead channel.
         // Whichever event fires must remove BOTH listeners: leaving the loser
         // attached leaked one 'close' listener per back-pressure episode.
-        const gate = new Promise<void>((resolve) => {
-          const release = (): void => {
-            target.removeListener('drain', release)
-            target.removeListener('close', release)
-            resolve()
+        const gate = new Promise<void>((release) => {
+          const releaseGate = (): void => {
+            target.removeListener('drain', releaseGate)
+            target.removeListener('close', releaseGate)
+            release()
           }
-          target.once('drain', release)
-          target.once('close', release)
+          target.once('drain', releaseGate)
+          target.once('close', releaseGate)
         })
         this.drainGate = gate
         void gate.then(() => {

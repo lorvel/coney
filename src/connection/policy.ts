@@ -12,11 +12,11 @@ export interface ReconnectPolicy {
   initialDelayMs: number
   /** Upper bound for the growing delay. Default `30_000` ms. */
   maxDelayMs: number
-  /** Multiplier applied after each failed attempt. Default `2`. */
+  /** Multiplier applied after each failed attempt. Finite, `>= 1`. Default `2`. */
   factor: number
   /** Random jitter as a fraction of the delay (`0.2` = ±20 %). Default `0.2`. */
   jitter: number
-  /** Give up after this many consecutive failures (`coney.reconnect_exhausted`). Default `Infinity`. */
+  /** Give up after this many consecutive failed ATTEMPTS (`coney.reconnect_exhausted`). Default `Infinity`. */
   maxAttempts: number
 }
 
@@ -37,14 +37,21 @@ export interface RecoveryOptionsMapped {
   maxRetries: number
 }
 
-/** Map the public policy (`*Ms` fields, `maxAttempts`) onto amqplib's `recovery` names. */
+/**
+ * Map the public policy (`*Ms` fields, `maxAttempts`) onto amqplib's `recovery` names.
+ *
+ * `maxAttempts` counts ATTEMPTS, `maxRetries` counts RETRIES AFTER the first one
+ * (amqplib gives up at `_attempt >= maxRetries` having started at 0), so the two
+ * differ by exactly one — passing the number through unchanged made a
+ * `maxAttempts: 3` boot try three times and a reconnect four.
+ */
 export function toRecoveryOptions(policy: ReconnectPolicy): RecoveryOptionsMapped {
   return {
     initialDelay: policy.initialDelayMs,
     maxDelay: policy.maxDelayMs,
     factor: policy.factor,
     jitter: policy.jitter,
-    maxRetries: policy.maxAttempts,
+    maxRetries: policy.maxAttempts === Infinity ? Infinity : Math.max(0, policy.maxAttempts - 1),
   }
 }
 
@@ -75,8 +82,16 @@ export function validateReconnectPolicy(policy: ReconnectPolicy): void {
   ) {
     throw new ConeyConfigError('reconnect.maxDelayMs must be a finite number >= initialDelayMs')
   }
-  if (typeof policy.factor !== 'number' || Number.isNaN(policy.factor) || policy.factor < 1) {
-    throw new ConeyConfigError('reconnect.factor must be a number >= 1')
+  if (
+    typeof policy.factor !== 'number' ||
+    Number.isNaN(policy.factor) ||
+    !Number.isFinite(policy.factor) ||
+    policy.factor < 1
+  ) {
+    // Finiteness matters: coney's own backoff clamps an infinite factor through
+    // maxDelayMs while amqplib silently substitutes its default of 2, so the boot
+    // and reconnect curves would diverge for the very same policy object.
+    throw new ConeyConfigError('reconnect.factor must be a finite number >= 1')
   }
   if (
     typeof policy.jitter !== 'number' ||
