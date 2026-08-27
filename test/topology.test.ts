@@ -201,14 +201,14 @@ describe('TopologyManager.reassert', () => {
     assert.ok(channel.calls.includes('bindQueue:test.jobs|test.events|a.*'))
   })
 
-  it('never caches its failure: a publisher on the same def is unaffected', async () => {
+  it('a failed re-assert leaves the publish path exactly as it found it', async () => {
     const channel = new FakeChannel()
     const topology = makeTopology({ channel, prefix: 'test', defaultRetry: NO_RETRY })
     const def = defineQueue({ name: 'jobs', retry: false })
     await topology.ensure(def)
 
-    // The main queue still declares; it is `<q>.dead` that an operator recreated
-    // with different arguments — so a publish through the default exchange is fine.
+    // The main queue still declares; it is `<q>.dead` that an operator recreated with
+    // different arguments — so a publish through the default exchange would route fine.
     channel.failures.set(
       'assertQueue:test.jobs.dead',
       amqpError('PRECONDITION_FAILED - inequivalent arg x-message-ttl', 406),
@@ -219,11 +219,12 @@ describe('TopologyManager.reassert', () => {
     )
     assert.ok(err instanceof ConeyTopologyError)
 
-    // `ensure`'s fail-fast cache is for callers who asked for this def. A background
-    // re-attach must not make an unrelated publish start rejecting.
-    channel.failures.clear()
+    // The whole regression: a BACKGROUND re-attach must not make an unrelated
+    // publisher start failing. `ensure` still short-circuits on `asserted` and issues
+    // no broker call at all — neither the cached fail-fast nor a fresh assert.
+    channel.calls.length = 0
     await topology.ensure(def)
-    assert.ok(channel.calls.includes('assertQueue:test.jobs'))
+    assert.deepEqual(channel.calls, [])
   })
 
   it('reports its failure once per call, so a retry loop is not silent', async () => {

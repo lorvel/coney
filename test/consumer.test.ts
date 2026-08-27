@@ -8,6 +8,11 @@ import {
 } from '../src/consume/pipeline.js'
 import { contextOf, republishOptions } from '../src/consume/delivery.js'
 import { UnrecoverableError } from '../src/core/errors.js'
+import { BaseConsumer, type ConsumerHooks } from '../src/consume/runtime.js'
+import type { ChannelFactory } from '../src/connection/manager.js'
+import type { ConeyLogEvent, LogEmitter } from '../src/core/log.js'
+import type { ConsumeMessage } from 'amqplib'
+import { FakeConfirmChannel, fakeFactory } from './fakes.js'
 
 const context = (attempt = 1): DeliveryContext => ({
   id: 'm-1',
@@ -259,5 +264,99 @@ describe('reason truncation and delivery context', () => {
       deliveryMode: 2,
       contentType: 'application/json',
     })
+  })
+})
+
+/**
+ * A minimal runtime: `doAttach` adopts a fake channel and nothing else, so the only
+ * behaviour under test is the base class's detach dispatch.
+ */
+class ProbeConsumer extends BaseConsumer {
+  constructor(
+    hooks: ConsumerHooks,
+    private readonly fake: FakeConfirmChannel,
+    emit: LogEmitter = () => {},
+  ) {
+    super('probe-tag', 1, emit, hooks)
+  }
+
+  get queueLabel(): string {
+    return 'probe.queue'
+  }
+
+  protected async doAttach(factory: ChannelFactory): Promise<void> {
+    const channel = await factory.createConfirmChannel()
+    this.adoptChannel(channel)
+  }
+
+  protected async processDelivery(): Promise<void> {}
+
+  /** amqplib's sync consume callback, reachable from a test. */
+  deliver(raw: ConsumeMessage | null): void {
+    this.onDelivery(this.fake.asChannel(), raw)
+  }
+}
+
+describe('BaseConsumer detach dispatch (spec §4)', () => {
+  const attached = async (
+    emit?: LogEmitter,
+  ): Promise<{
+    fake: FakeConfirmChannel
+    runtime: ProbeConsumer
+    seen: { disposed: number; detached: number }
+  }> => {
+    const fake = new FakeConfirmChannel()
+    const seen = { disposed: 0, detached: 0 }
+    const runtime = new ProbeConsumer(
+      {
+        onDispose: () => {
+          seen.disposed += 1
+        },
+        onDetached: () => {
+          seen.detached += 1
+        },
+      },
+      fake,
+      emit,
+    )
+    await runtime.attach(fakeFactory({ createConfirmChannel: async () => fake.asChannel() }))
+    return { fake, runtime, seen }
+  }
+
+  it('a channel that dies on its own hands the runtime to recovery', async () => {
+    // A channel-level error (404 on a vanished bucket, 406, 403) closes just this
+    // channel with the CONNECTION still up. amqplib delivers `null` only for a real
+    // `basic.cancel`, so before the hand-off this path detached in total silence and
+    // nothing ever re-attached: `active` stayed true and the consumer was dead.
+    const { fake, runtime, seen } = await attached()
+    fake.kill()
+    assert.deepEqual(seen, { disposed: 0, detached: 1 })
+    assert.equal(runtime.active, true)
+    assert.equal(runtime.attached, false)
+  })
+
+  it('a deliberate release is not a detach', async () => {
+    const { runtime, seen } = await attached()
+    await runtime.releaseChannel()
+    assert.equal(seen.detached, 0)
+    assert.equal(runtime.attached, false)
+  })
+
+  it('cancel() disposes and never resurrects', async () => {
+    const { fake, runtime, seen } = await attached()
+    await runtime.cancel({ drainMs: 0 })
+    fake.kill()
+    assert.deepEqual(seen, { disposed: 1, detached: 0 })
+    assert.equal(runtime.active, false)
+  })
+
+  it('a broker cancel logs consumer_stopped and hands off too', async () => {
+    const logged: ConeyLogEvent[] = []
+    const { runtime, seen } = await attached((event) => logged.push(event))
+    runtime.deliver(null) // amqplib's `null` delivery IS the basic.cancel
+    assert.equal(seen.detached, 1)
+    const stopped = logged.filter((event) => event.event === 'coney.consumer_stopped')
+    assert.equal(stopped.length, 1)
+    assert.equal(stopped[0]?.queue, 'probe.queue')
   })
 })

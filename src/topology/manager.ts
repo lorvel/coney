@@ -96,19 +96,26 @@ export class TopologyManager {
    * therefore never be redeclared, and the consumer trying to re-attach to it would 404
    * against a queue nothing intends to recreate, forever.
    *
-   * A failure here is NOT cached, unlike `ensure`'s. `entry.error` is a fail-fast for
-   * the LAZY path, where the caller asked for this def and wants the answer; a
-   * background re-attach must never be the reason an unrelated `publish()` on the same
-   * def starts rejecting (the main queue is usually fine — it is `<q>.dead`, a bucket or
-   * a binding that failed). The re-attach loop reports its own failures instead.
+   * A FAILED re-assert leaves the shared cache exactly as it found it. `asserted` and
+   * `error` drive the LAZY path, where a caller asked for this def and wants the
+   * answer; a background re-attach must never be the reason an unrelated `publish()`
+   * on the same def starts failing — and the thing that failed is usually not the main
+   * queue but `<q>.dead`, a bucket or a binding, so the publish would have routed fine.
+   * The re-attach loop reports its own failures (`coney.consumer_reattach_failed`).
+   *
+   * The bucket and topic flags are deliberately NOT restored: re-asserting those is
+   * idempotent, and they may genuinely be gone. Only the fail-fast state is preserved.
    */
   async reassert(def: AnyDef): Promise<void> {
     const entry = this.entryFor(def)
+    const wasAsserted = entry.asserted
     this.invalidate(entry)
     try {
       await this.ensure(def)
-    } finally {
+    } catch (err) {
+      entry.asserted = wasAsserted
       entry.error = null
+      throw err
     }
   }
 

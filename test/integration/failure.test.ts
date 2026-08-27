@@ -253,3 +253,59 @@ test(
     }
   },
 )
+
+test(
+  'a channel-level error on a LIVE connection: the consumer re-attaches, ladder and all',
+  { skip: skipWithoutBroker },
+  async () => {
+    const prefix = newRunPrefix('fl6')
+    const collector = eventCollector()
+    const mq = createConey({
+      url: BROKER_URL as string,
+      prefix,
+      name: prefix,
+      reconnect: { initialDelayMs: 200, maxDelayMs: 1000 },
+      log: collector.log,
+    })
+    try {
+      const def = defineQueue<{ n: number }>({ name: 'work', retry: { delays: [1000] } })
+      const attempts: number[] = []
+      await mq.queue(def).consume((message) => {
+        attempts.push(message.attempt)
+        if (message.attempt === 1) throw new Error('force the retry path')
+      })
+
+      // Delete the retry bucket — queue AND exchange — from a SECOND connection. The
+      // consumer's own channel is untouched until it publishes a retry into the hole;
+      // that 404 kills its channel with the connection perfectly healthy.
+      await withRawChannel(async (ch) => {
+        await ch.deleteQueue(`${prefix}.retry.1s`)
+      })
+      await withRawChannel(async (ch) => {
+        await ch.deleteExchange(`${prefix}.retry.1s`)
+      })
+
+      await mq.queue(def).publish({ n: 1 })
+      // Attempt 1 dies with the channel. Recovery has to redeclare the WHOLE def, not
+      // just the queue: the redelivered attempt publishes its retry into the bucket
+      // again, and only a restored bucket (exchange + TTL queue) can dead-letter it
+      // back here as attempt 2.
+      await waitFor(() => attempts.includes(2), 'the ladder completed after the re-attach', 25_000)
+
+      // The litmus that makes this a channel-error test rather than a rerun of the
+      // broker-cancel one above: amqplib delivers `null` ONLY for a real `basic.cancel`,
+      // so nothing logged `consumer_stopped` — and the connection never went anywhere.
+      assert.equal(collector.names().filter((name) => name === 'coney.consumer_stopped').length, 0)
+      assert.equal(collector.names().filter((name) => name === 'coney.disconnected').length, 0)
+      assert.equal(collector.names().filter((name) => name === 'coney.reconnecting').length, 0)
+      assert.equal(mq.state, 'open')
+      assert.ok(
+        collector.events.filter((e) => e.event === 'coney.consumer_started').length >= 2,
+        're-attached at least once',
+      )
+    } finally {
+      await mq.close()
+      await cleanup(namesFor(prefix, ['work'], [1000]))
+    }
+  },
+)

@@ -34,7 +34,10 @@ releases are fixes only.
 - **A re-attach failure no longer breaks publishing.** The re-assert shares the topology
   cache with the publish path, so a consumer-side failure (usually on `<q>.dead`, a bucket
   or a binding — not the main queue) made every unrelated `publish()` for that def reject
-  until the next round. Failures from a background re-attach are no longer cached.
+  until the next round. A failed background re-assert now leaves that cache exactly as it
+  found it. (One narrow window remains by design: a publish that arrives while the
+  re-assert is still in flight joins it and shares its outcome, as any two concurrent
+  `ensure` callers always have.)
 - The backoff curve is now total: `reconnect: { initialDelayMs: 0 }` used to yield a `NaN`
   delay after ~1000 rounds (`0 * Infinity`), and any delay above `TIMEOUT_MAX` was silently
   clamped by `setTimeout` to 1 ms — both inverting "back off" into "retry immediately".
@@ -59,6 +62,11 @@ Behaviour changes a caller can observe (0.x MINOR, called out per the policy abo
   by hand now ends up with two consumers on the queue. Drop the workaround —
   `coney.consumer_reattach_failed` is the signal to watch instead, and it only fires when
   coney could not do it.
+- The consumer re-attach backoff now has a **100 ms floor**. `reconnect.initialDelayMs: 0`
+  is still honoured by the connection loop, which is bounded by `maxAttempts` and whose
+  rounds cost a TCP connect against an unreachable endpoint; the re-attach loop has no
+  ceiling and each round opens a channel and declares against a HEALTHY broker, so a zero
+  delay there was measured at ~370 rounds/second.
 - The re-attach loop is unbounded but no longer immortal: it stops once the connection is
   terminally `closed` (an exhausted `reconnect.maxAttempts`), where previously it warned
   once per `maxDelayMs` for the life of the process on a client already reporting
