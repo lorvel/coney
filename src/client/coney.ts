@@ -20,7 +20,11 @@ import {
   effectiveDelays,
   type RetryPolicy,
 } from '../defs/retry.js'
-import { resolveReconnectPolicy, type ReconnectPolicy } from '../connection/policy.js'
+import {
+  backoffDelayMs,
+  resolveReconnectPolicy,
+  type ReconnectPolicy,
+} from '../connection/policy.js'
 import { ConnectionManager } from '../connection/manager.js'
 import { TopologyManager } from '../topology/manager.js'
 import { Publisher } from '../publish/publisher.js'
@@ -37,7 +41,7 @@ import {
   type SubscribeOptions,
   type Subscription,
 } from '../consume/types.js'
-import { BaseConsumer } from '../consume/runtime.js'
+import { BaseConsumer, type ConsumerHooks } from '../consume/runtime.js'
 import { QueueConsumer } from '../consume/queue-consumer.js'
 import { TopicSubscription } from '../consume/topic-subscription.js'
 import { inspectQueue, purgeDeadQueue, replayDeadQueue, type QueueOpsContext } from './queue-ops.js'
@@ -66,6 +70,14 @@ interface PublishArgs<T> {
 
 const DEFAULT_PUBLISH_TIMEOUT_MS = 5000
 const DEFAULT_DRAIN_MS = 10_000
+/**
+ * Floor for the consumer re-attach backoff. The reconnect policy legally allows
+ * `initialDelayMs: 0` ("retry at once"), which is survivable for the connection loop —
+ * bounded by `maxAttempts`, and each round costs a real TCP connect against an
+ * unreachable endpoint. This loop has no ceiling and each round opens a channel and
+ * issues declares against a HEALTHY broker, so a zero delay is a self-inflicted flood.
+ */
+const MIN_REATTACH_DELAY_MS = 100
 
 /**
  * Create a client — no I/O until {@link Coney.open} or the first publish/consume.
@@ -112,12 +124,18 @@ class ConeyClient implements Coney {
   private readonly queueHandles = new Map<string, QueueHandle<never>>()
   private readonly topicHandles = new Map<string, TopicHandle<never>>()
   private readonly defaultRetry: RetryPolicy
+  /** Kept for the consumer re-attach loop — the connection's own copy lives in the manager. */
+  private readonly reconnectPolicy: ReconnectPolicy
   private phaseOverride: 'closing' | 'closed' | null = null
   private closePromise: Promise<CloseResult> | null = null
   /** Every accepted publish, from pipeline entry to confirm — close() waits for these. */
   private readonly activePublishes = new Set<Promise<void>>()
   /** Every live consumer/subscription runtime; re-attached on each `setup`. */
   private readonly consumers = new Set<BaseConsumer>()
+  /** Runtimes with a re-attach loop running, so a second detach cannot start a twin. */
+  private readonly reattaching = new Set<BaseConsumer>()
+  /** Releases for parked re-attach sleeps, so close()/cancel() can drop the runtime now. */
+  private readonly reattachWaits = new Map<BaseConsumer, () => void>()
   private tagCounter = 0
 
   constructor(options: ConeyOptions, reconnect: ReconnectPolicy, defaultRetry: RetryPolicy) {
@@ -140,6 +158,7 @@ class ConeyClient implements Coney {
     })
     this.publisher = new Publisher(this.manager)
     this.defaultRetry = defaultRetry
+    this.reconnectPolicy = reconnect
     this.manager.onSetup = async (_model, channels) => {
       await this.topology.replayAll(channels)
       await this.publisher.onSetup(channels)
@@ -407,7 +426,10 @@ class ConeyClient implements Coney {
     // post-attach check tears the late channel down as soon as the attach settles.)
     await Promise.all(runtimes.map((runtime) => runtime.releaseChannel()))
     // Drop the runtimes: each one holds the user's handler and everything its
-    // closure captured, and a closed client can never re-attach them.
+    // closure captured, and a closed client can never re-attach them. A parked
+    // re-attach sleep would keep exactly those alive behind its timer closure for
+    // the rest of its delay, so release them here rather than let them expire.
+    for (const release of [...this.reattachWaits.values()]) release()
     this.consumers.clear()
     await this.manager.closeConnection()
     this.phaseOverride = 'closed'
@@ -442,7 +464,7 @@ class ConeyClient implements Coney {
       bucketWire: (delayMs) => wireName(this.prefix, bucketLogicalName(delayMs)),
       consumerTag: this.nextConsumerTag(def.name),
       emit: this.emit,
-      onDispose: (disposed) => this.consumers.delete(disposed),
+      hooks: this.hooksFor(def),
     })
     return this.startRuntime(runtime, def)
   }
@@ -466,7 +488,7 @@ class ConeyClient implements Coney {
       options,
       consumerTag: this.nextConsumerTag(def.name),
       emit: this.emit,
-      onDispose: (disposed) => this.consumers.delete(disposed),
+      hooks: this.hooksFor(def),
     })
     return this.startRuntime(runtime, def)
   }
@@ -490,5 +512,116 @@ class ConeyClient implements Coney {
       await runtime.dispose()
       throw err
     }
+  }
+
+  /** The lifecycle hooks every runtime gets; named fields, so the pair cannot transpose. */
+  private hooksFor(def: AnyDef): ConsumerHooks {
+    return {
+      onDispose: (disposed) => {
+        this.consumers.delete(disposed)
+        // Release a parked re-attach sleep NOW: its timer closure is what would keep
+        // the runtime, the user's handler and everything it captured reachable.
+        this.reattachWaits.get(disposed)?.()
+      },
+      onDetached: (detached) => void this.reattachDetached(detached, def),
+    }
+  }
+
+  /** Every reason the re-attach loop must give up, in one place (checked at each await). */
+  private stopReattach(runtime: BaseConsumer): boolean {
+    return !runtime.active || this.phaseOverride !== null || this.manager.phase === 'closed'
+  }
+
+  /**
+   * Bring back a runtime that lost its channel without asking to (spec §4).
+   *
+   * The assumption this exists to kill is that a reconnect is always coming. A broker
+   * cancel with the connection still open — deleted queue, failed queue node, an
+   * operator deleting a queue in the management UI — leaves nothing to trigger `setup`,
+   * so waiting for `setup` means waiting forever: the process keeps its connection,
+   * keeps publishing, keeps passing every health check, and silently never consumes
+   * again. A channel-level error (404/406/403) reaches this the same way and was even
+   * quieter: amqplib delivers `null` only for a real `basic.cancel`, so that runtime
+   * detached with no event at all.
+   *
+   * The topology is re-asserted before attaching because the usual cause is that the
+   * queue is GONE; a bare `consume` would 404 and kill its channel every round.
+   *
+   * Racing a real reconnect is safe: `attach` parks on the manager's open wait, the
+   * setup hook skips a runtime whose attach is pending (see the deadlock note there),
+   * and a round that wakes to find the runtime already attached returns without
+   * touching the broker at all — which is what makes it cheap to hand EVERY detach here
+   * rather than only the ones no reconnect will repair.
+   */
+  private async reattachDetached(runtime: BaseConsumer, def: AnyDef): Promise<void> {
+    if (this.reattaching.has(runtime)) return // one loop per runtime; rounds are idempotent
+    this.reattaching.add(runtime)
+    try {
+      let attempt = 0
+      // No attempt ceiling, deliberately. `maxAttempts` bounds the CONNECTION loop,
+      // where giving up is loud and observable: `coney.reconnect_exhausted`, state
+      // `closed`, pending work rejected. Giving up HERE would leave a silently dead
+      // consumer on a healthy connection — precisely the failure this loop exists to
+      // end. It stops only when there is nothing left to re-attach to: the runtime was
+      // cancelled, the client is closing, or the connection itself is terminally gone
+      // (`stopReattach`) — the last of which is exactly the exhausted-policy state, and
+      // is why an unbounded loop here does not mean an immortal one.
+      for (;;) {
+        const delay = Math.max(
+          MIN_REATTACH_DELAY_MS,
+          backoffDelayMs(this.reconnectPolicy, ++attempt),
+        )
+        const stop = await this.sleepUnlessStopped(runtime, delay)
+        if (stop) return
+        try {
+          await this.manager.waitForOpen()
+          // The open wait is unbounded and can park for a whole outage: re-check
+          // before mutating shared topology on behalf of a runtime that is now gone.
+          // `attached` covers the reconnect that repaired it while we slept.
+          if (this.stopReattach(runtime) || runtime.attached) return
+          // `reassert`, not `ensure`: the queue is very likely GONE (that is what
+          // detached the consumer), and `ensure` would trust its `asserted` cache —
+          // which only clears on a reconnect — and skip the redeclare, leaving
+          // `attach` to 404 for good.
+          await this.topology.reassert(def)
+          await runtime.attach(this.manager)
+          return
+        } catch (err) {
+          if (this.stopReattach(runtime)) return
+          this.emit({
+            event: 'coney.consumer_reattach_failed',
+            level: 'warn',
+            queue: runtime.queueLabel,
+            reason: reasonOf(err),
+            retryInMs: Math.max(
+              MIN_REATTACH_DELAY_MS,
+              backoffDelayMs(this.reconnectPolicy, attempt + 1),
+            ),
+          })
+        }
+      }
+    } finally {
+      this.reattaching.delete(runtime)
+    }
+  }
+
+  /**
+   * Sleep, then say whether the re-attach loop should stop. Unref'd on purpose: a
+   * pending re-attach must never be the reason a process refuses to exit. Cancellable
+   * on purpose too — `unref` drops the event-loop reference but NOT the timer entry, so
+   * an uncancelled sleep holds its closure (and the runtime behind it) until it fires,
+   * which is up to `maxDelayMs` after `close()`/`cancel()` already resolved.
+   */
+  private sleepUnlessStopped(runtime: BaseConsumer, ms: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const settle = (): void => {
+        clearTimeout(timer)
+        this.reattachWaits.delete(runtime)
+        resolve(this.stopReattach(runtime))
+      }
+      const timer = setTimeout(settle, ms)
+      timer.unref()
+      this.reattachWaits.set(runtime, settle)
+    })
   }
 }

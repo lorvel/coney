@@ -164,6 +164,24 @@ export async function queueDepth(queue: string): Promise<number> {
 }
 
 /**
+ * Delete a queue over AMQP from a SECOND connection: a broker-initiated consumer
+ * cancel (`basic.cancel`) with the consumer's own connection left untouched — the
+ * case no reconnect ever repairs.
+ *
+ * A second connection suffices for the durable queues a queue def declares; `cleanup`
+ * below deletes exactly these the same way on every run. It would NOT suffice for a
+ * subscription's exclusive queue, which refuses every connection but its owner (the
+ * management API refuses it too, with 400) — so a broker cancel cannot be provoked on
+ * one at all, and only the `consume()` path is coverable here.
+ */
+export async function deleteQueue(queue: string): Promise<void> {
+  assert.ok(queue.startsWith('it.'), `refuses to delete "${queue}" (shared broker)`)
+  await withRawChannel(async (ch) => {
+    await ch.deleteQueue(queue)
+  })
+}
+
+/**
  * Force-close the connection named `connectionName` via the management API.
  * The listing lags ~5 s behind reality — poll until it shows up, then DELETE.
  */

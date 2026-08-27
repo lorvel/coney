@@ -224,7 +224,7 @@ All library errors extend `ConeyError` and carry a stable `code`, so `switch (er
 
 ### Log events
 
-`log` is a single typed callback receiving the exhaustive `ConeyLogEvent` union (21 events, fixed level each — connection lifecycle, topology, consumer lifecycle, retry/dead per message, drain). Credentials in URLs are always redacted. One-line adapter for any structured logger:
+`log` is a single typed callback receiving the exhaustive `ConeyLogEvent` union (22 events, fixed level each — connection lifecycle, topology, consumer lifecycle, retry/dead per message, drain). Credentials in URLs are always redacted. One-line adapter for any structured logger:
 
 ```ts
 createConey({ url, log: (e) => logger[e.level](e.event, e) })

@@ -17,7 +17,7 @@ import {
   type PipelineOutcome,
 } from './pipeline.js'
 import { confirmPublish, contextOf, republishOptions } from './delivery.js'
-import { BaseConsumer } from './runtime.js'
+import { BaseConsumer, type ConsumerHooks } from './runtime.js'
 
 interface QueueConsumerArgs<T> {
   def: QueueDef<T>
@@ -31,12 +31,12 @@ interface QueueConsumerArgs<T> {
   bucketWire: (delayMs: number) => string
   consumerTag: string
   emit: LogEmitter
-  onDispose: (runtime: BaseConsumer) => void
+  hooks: ConsumerHooks
 }
 
 export class QueueConsumer<T> extends BaseConsumer {
   constructor(private readonly args: QueueConsumerArgs<T>) {
-    super(args.consumerTag, args.options?.prefetch ?? 1, args.emit, args.onDispose)
+    super(args.consumerTag, args.options?.prefetch ?? 1, args.emit, args.hooks)
   }
 
   protected async doAttach(factory: ChannelFactory): Promise<void> {
@@ -63,17 +63,8 @@ export class QueueConsumer<T> extends BaseConsumer {
     }
   }
 
-  protected handleBrokerCancel(): void {
-    const { channel } = this
-    this.channel = null
-    this.consumerTag = null
-    this.emit({
-      event: 'coney.consumer_stopped',
-      level: 'info',
-      queue: this.args.wire,
-      consumerTag: this.tag,
-    })
-    if (channel !== null) void channel.close().catch(() => {})
+  get queueLabel(): string {
+    return this.args.wire
   }
 
   protected async processDelivery(

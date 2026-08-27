@@ -174,6 +174,74 @@ describe('TopologyManager.replayAll: one bad def must not take the connection do
   })
 })
 
+describe('TopologyManager.reassert', () => {
+  const topic = defineTopic({ name: 'events' })
+  const bound = defineQueue({
+    name: 'jobs',
+    retry: { delays: [10_000] },
+    bindings: [{ topic, patterns: ['a.*'] }],
+  })
+
+  it('redeclares the buckets and bound exchanges too, not just the queue', async () => {
+    const channel = new FakeChannel()
+    const topology = makeTopology({ channel, prefix: 'test' })
+    await topology.ensure(bound)
+    const first = [...channel.calls]
+    channel.calls.length = 0
+
+    await topology.reassert(bound)
+
+    // The whole point: `ensure` would have returned on the `asserted` cache, and a
+    // partial invalidation would redeclare the queue while the ladder and the bound
+    // exchange — which the same operator action usually removed — stay missing.
+    assert.deepEqual(channel.calls, first)
+    assert.ok(channel.calls.includes('assertQueue:test.retry.10s'))
+    assert.ok(channel.calls.includes('assertExchange:test.retry.10s'))
+    assert.ok(channel.calls.includes('assertExchange:test.events'))
+    assert.ok(channel.calls.includes('bindQueue:test.jobs|test.events|a.*'))
+  })
+
+  it('never caches its failure: a publisher on the same def is unaffected', async () => {
+    const channel = new FakeChannel()
+    const topology = makeTopology({ channel, prefix: 'test', defaultRetry: NO_RETRY })
+    const def = defineQueue({ name: 'jobs', retry: false })
+    await topology.ensure(def)
+
+    // The main queue still declares; it is `<q>.dead` that an operator recreated
+    // with different arguments — so a publish through the default exchange is fine.
+    channel.failures.set(
+      'assertQueue:test.jobs.dead',
+      amqpError('PRECONDITION_FAILED - inequivalent arg x-message-ttl', 406),
+    )
+    const err = await topology.reassert(def).then(
+      () => null,
+      (reason: unknown) => reason,
+    )
+    assert.ok(err instanceof ConeyTopologyError)
+
+    // `ensure`'s fail-fast cache is for callers who asked for this def. A background
+    // re-attach must not make an unrelated publish start rejecting.
+    channel.failures.clear()
+    await topology.ensure(def)
+    assert.ok(channel.calls.includes('assertQueue:test.jobs'))
+  })
+
+  it('reports its failure once per call, so a retry loop is not silent', async () => {
+    const channel = new FakeChannel()
+    const logged: ConeyLogEvent[] = []
+    const topology = makeTopology({
+      channel,
+      prefix: 'test',
+      emit: (event) => logged.push(event),
+    })
+    const def = defineQueue({ name: 'jobs', retry: false })
+    channel.failures.set('assertQueue:test.jobs', amqpError('NOT_FOUND - no queue', 404))
+    await topology.reassert(def).catch(() => {})
+    await topology.reassert(def).catch(() => {})
+    assert.equal(logged.filter((event) => event.event === 'coney.topology_failed').length, 2)
+  })
+})
+
 describe('TopologyManager.inspectRetry', () => {
   it('reports the depth of every known bucket', async () => {
     const channel = new FakeChannel()

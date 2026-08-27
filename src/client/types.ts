@@ -120,7 +120,7 @@ export interface QueueHandle<T> {
    */
   publish(body: T, options?: PublishOptions): Promise<void>
 
-  /** Attach a consumer on its own channel; resolves once registered with the broker; re-attached after every reconnect. */
+  /** Attach a consumer on its own channel; resolves once registered with the broker. Re-attached after every reconnect AND, on its own backoff loop, whenever it is detached while the connection stays up (broker cancel, channel-level error) — a detach never leaves it silently dead. */
   consume(handler: Handler<T>, options?: ConsumeOptions): Promise<Subscription>
 
   /** Passive inspection (no topology changes). */
@@ -146,7 +146,8 @@ export interface TopicHandle<T> {
   /**
    * Per-instance subscription on a server-named exclusive queue bound with `patterns`.
    * Acked after the handler settles; a throw is logged (`coney.subscription_error`) and
-   * dropped — no retry. Dies with the connection: after a reconnect a new queue is bound and
+   * dropped — no retry. Dies with its queue: after a reconnect — or any other detach, which
+   * is re-attached the same way as {@link QueueHandle.consume} — a NEW queue is bound and
    * messages in between are lost (`coney.subscription_reset`). Durable delivery → {@link QueueDefInput.bindings}.
    */
   subscribe(

@@ -10,7 +10,7 @@ import type { Channel, ChannelModel, ConfirmChannel, RecoveringChannelModel } fr
 import { ConeyClosedError, ConeyUnavailableError, toError } from '../core/errors.js'
 import { redactText, redactUrl, type LogEmitter } from '../core/log.js'
 import { raceTimeout } from '../core/time.js'
-import { toRecoveryOptions, type ReconnectPolicy } from './policy.js'
+import { backoffDelayMs, toRecoveryOptions, type ReconnectPolicy } from './policy.js'
 
 /**
  * How long `close()` waits for an in-flight hand-over connect to land so it can
@@ -91,6 +91,15 @@ export class ConnectionManager {
   }
 
   /**
+   * True from the first instant of `closeConnection()` — before the connection
+   * actually goes away, so a background caller can tell "the close killed my RPC"
+   * from "the broker refused it" while the RPCs are still rejecting.
+   */
+  get closing(): boolean {
+    return this.closeRequested
+  }
+
+  /**
    * Kick off the connect loop (idempotent, non-blocking).
    *
    * Two phases (docs/design.md §4): amqplib's promise API only hands the
@@ -156,13 +165,7 @@ export class ConnectionManager {
 
   /** The recovery backoff formula (delay, factor, jitter) — resolves early on close. */
   private backoffSleep(attempt: number): Promise<void> {
-    const base = Math.min(
-      this.policy.maxDelayMs,
-      this.policy.initialDelayMs * this.policy.factor ** (attempt - 1),
-    )
-    const jitterPart = base * this.policy.jitter
-    const offset = jitterPart > 0 ? Math.random() * jitterPart * 2 - jitterPart : 0
-    const delay = Math.max(0, Math.round(base + offset))
+    const delay = backoffDelayMs(this.policy, attempt)
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.cancelBackoff = null

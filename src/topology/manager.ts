@@ -78,15 +78,71 @@ export class TopologyManager {
    * cached, so later callers fail fast until the next successful replay.
    */
   async ensure(def: AnyDef): Promise<void> {
-    const wire = this.register(def)
-    const entry = this.defs.get(wire)
-    if (entry === undefined) throw new ConeyConfigError(`def "${def.name}" is not registered`) // unreachable
+    const entry = this.entryFor(def)
     if (entry.asserted) return
     if (entry.error !== null) throw entry.error
     entry.pending ??= this.assertNow(entry).finally(() => {
       entry.pending = null
     })
     await entry.pending
+  }
+
+  /**
+   * Assert a def again even if it is already marked asserted — for when its broker-side
+   * objects may have vanished while the connection stayed UP.
+   *
+   * `ensure` cannot serve this case: it trusts `asserted`, and that flag is only cleared
+   * by `replayAll` on a reconnect. A queue deleted under a live connection would
+   * therefore never be redeclared, and the consumer trying to re-attach to it would 404
+   * against a queue nothing intends to recreate, forever.
+   *
+   * A failure here is NOT cached, unlike `ensure`'s. `entry.error` is a fail-fast for
+   * the LAZY path, where the caller asked for this def and wants the answer; a
+   * background re-attach must never be the reason an unrelated `publish()` on the same
+   * def starts rejecting (the main queue is usually fine — it is `<q>.dead`, a bucket or
+   * a binding that failed). The re-attach loop reports its own failures instead.
+   */
+  async reassert(def: AnyDef): Promise<void> {
+    const entry = this.entryFor(def)
+    this.invalidate(entry)
+    try {
+      await this.ensure(def)
+    } finally {
+      entry.error = null
+    }
+  }
+
+  /** Register and look up in one step — after `register` the entry always exists. */
+  private entryFor(def: AnyDef): RegisteredDef {
+    const wire = this.register(def)
+    const entry = this.defs.get(wire)
+    if (entry === undefined) throw new ConeyConfigError(`def "${def.name}" is not registered`) // unreachable
+    return entry
+  }
+
+  /**
+   * Forget everything cached about a def's broker-side objects. Invalidation is
+   * TRANSITIVE on purpose: a def's retry buckets and its bound topic exchanges sit
+   * behind their own caches (`bucketsAsserted`, the topic entries' own `asserted`),
+   * each cleared only by `replayAll` — and whatever removed the queue under a live
+   * connection usually removed those too. Clearing the entry alone redeclares the
+   * queue and silently leaves the ladder missing (the next handler failure publishes
+   * into nothing) or `bindQueue` 404-ing against an exchange nobody will recreate.
+   */
+  private invalidate(entry: RegisteredDef): void {
+    entry.asserted = false
+    entry.error = null
+    const { def } = entry
+    if (def.kind !== 'queue') return
+    for (const delayMs of effectiveDelays(def.retry, this.args.defaultRetry)) {
+      this.bucketsAsserted.delete(durationLabel(delayMs))
+    }
+    for (const binding of def.bindings ?? []) {
+      const topicEntry = this.defs.get(wireName(this.args.prefix, binding.topic.name))
+      if (topicEntry === undefined) continue
+      topicEntry.asserted = false
+      topicEntry.error = null
+    }
   }
 
   private async assertNow(entry: RegisteredDef): Promise<void> {
@@ -180,13 +236,19 @@ export class TopologyManager {
     } catch (err) {
       const failure = topologyError('failed to assert the topology of', wire, err)
       entry.error = failure
-      this.args.emit({
-        event: 'coney.topology_failed',
-        level: 'error',
-        target: wire,
-        reason: reasonOf(err),
-        ...(failure.amqpCode !== undefined ? { amqpCode: failure.amqpCode } : {}),
-      })
+      // Not while closing: an assert can be in flight in the background (the consumer
+      // re-attach loop) when close() lands, and the close itself is what rejects its
+      // RPC. Paging on an orderly shutdown is worse than losing that line — the caller
+      // still gets `failure` thrown, and a lazy caller reports it for itself.
+      if (!this.args.manager.closing) {
+        this.args.emit({
+          event: 'coney.topology_failed',
+          level: 'error',
+          target: wire,
+          reason: reasonOf(err),
+          ...(failure.amqpCode !== undefined ? { amqpCode: failure.amqpCode } : {}),
+        })
+      }
       throw failure
     }
   }

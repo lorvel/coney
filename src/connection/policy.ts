@@ -5,6 +5,7 @@
  */
 
 import { ConeyConfigError } from '../core/errors.js'
+import { TIMEOUT_MAX } from '../core/time.js'
 
 /** Backoff policy used for the initial connect AND every reconnect. */
 export interface ReconnectPolicy {
@@ -53,6 +54,28 @@ export function toRecoveryOptions(policy: ReconnectPolicy): RecoveryOptionsMappe
     jitter: policy.jitter,
     maxRetries: policy.maxAttempts === Infinity ? Infinity : Math.max(0, policy.maxAttempts - 1),
   }
+}
+
+/**
+ * One step of the recovery backoff curve: `initialDelayMs * factor^(attempt-1)`, clamped
+ * by `maxDelayMs` and spread by `jitter`. Shared rather than inlined at each caller so
+ * the connection loop and the consumer re-attach loop cannot drift apart — a broker
+ * refusing one is very likely refusing the other, and two curves against the same broker
+ * would make the logs impossible to read together.
+ *
+ * Total by construction, because a caller with no attempt ceiling reaches the ugly
+ * inputs within seconds: `factor ** (attempt - 1)` overflows to `Infinity` after ~1000
+ * rounds, which is `NaN` when `initialDelayMs` is 0 (a legal policy), and NaN survives
+ * `Math.min`, `Math.round` and `Math.max(0, …)` alike. `setTimeout` turns BOTH NaN and
+ * anything above {@link TIMEOUT_MAX} into 1 ms, so an unclamped result inverts "back
+ * off" into "hammer the broker as fast as you can".
+ */
+export function backoffDelayMs(policy: ReconnectPolicy, attempt: number): number {
+  const grown = policy.initialDelayMs * policy.factor ** (attempt - 1)
+  const base = Number.isNaN(grown) ? policy.maxDelayMs : Math.min(policy.maxDelayMs, grown)
+  const jitterPart = base * policy.jitter
+  const offset = jitterPart > 0 ? Math.random() * jitterPart * 2 - jitterPart : 0
+  return Math.min(TIMEOUT_MAX, Math.max(0, Math.round(base + offset)))
 }
 
 /**

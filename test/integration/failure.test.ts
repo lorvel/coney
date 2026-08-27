@@ -11,6 +11,7 @@ import { ConeyTopologyError, createConey, defineQueue, defineTopic } from '../..
 import {
   BROKER_URL,
   cleanup,
+  deleteQueue,
   eventCollector,
   forceCloseConnection,
   namesFor,
@@ -195,6 +196,60 @@ test(
       assert.equal(mq.state, 'closed')
     } finally {
       await mq.close()
+    }
+  },
+)
+
+test(
+  'broker-initiated cancel on a LIVE connection: the consumer re-attaches by itself',
+  { skip: skipWithoutBroker },
+  async () => {
+    const prefix = newRunPrefix('fl5')
+    const collector = eventCollector()
+    const mq = createConey({
+      url: BROKER_URL as string,
+      prefix,
+      name: prefix,
+      reconnect: { initialDelayMs: 200, maxDelayMs: 1000 },
+      log: collector.log,
+    })
+    try {
+      const def = defineQueue<{ n: number }>({ name: 'work', retry: { delays: [60_000] } })
+      const got: number[] = []
+      await mq.queue(def).consume((message) => {
+        got.push(message.body.n)
+      })
+      // Positive control. Without a delivery that DID arrive, a later "nothing arrived"
+      // would be equally explained by a consumer that never worked in the first place.
+      await mq.queue(def).publish({ n: 1 })
+      await waitFor(() => got.length === 1, 'baseline delivery')
+
+      // Deleting the queue is what makes the broker cancel the consumer. The connection
+      // is not touched, which is the whole point of the case.
+      await deleteQueue(`${prefix}.work`)
+      await waitFor(
+        () => collector.names().includes('coney.consumer_stopped'),
+        'broker cancel observed',
+        15_000,
+      )
+      await waitFor(
+        () => collector.events.filter((e) => e.event === 'coney.consumer_started').length >= 2,
+        're-attached',
+        20_000,
+      )
+
+      // The assertions that make this a test of broker-cancel rather than of reconnects.
+      // Re-attaching used to happen ONLY through `setup`, so a version of this test that
+      // let the connection drop would pass against the unfixed library.
+      assert.equal(collector.names().filter((name) => name === 'coney.disconnected').length, 0)
+      assert.equal(collector.names().filter((name) => name === 'coney.reconnecting').length, 0)
+      assert.equal(mq.state, 'open')
+
+      await mq.queue(def).publish({ n: 2 })
+      await waitFor(() => got.includes(2), 'delivery after the re-attach', 15_000)
+    } finally {
+      await mq.close()
+      await cleanup(namesFor(prefix, ['work'], [60_000]))
     }
   },
 )

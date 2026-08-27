@@ -14,7 +14,7 @@ import type { TopicDef } from '../defs/define.js'
 import type { Handler, SubscribeOptions } from './types.js'
 import { runConsumePipeline, truncateReason } from './pipeline.js'
 import { contextOf } from './delivery.js'
-import { BaseConsumer } from './runtime.js'
+import { BaseConsumer, type ConsumerHooks } from './runtime.js'
 
 interface TopicSubscriptionArgs<T> {
   def: TopicDef<T>
@@ -25,7 +25,7 @@ interface TopicSubscriptionArgs<T> {
   options: SubscribeOptions | undefined
   consumerTag: string
   emit: LogEmitter
-  onDispose: (runtime: BaseConsumer) => void
+  hooks: ConsumerHooks
 }
 
 export class TopicSubscription<T> extends BaseConsumer {
@@ -34,7 +34,7 @@ export class TopicSubscription<T> extends BaseConsumer {
   private everAttached = false
 
   constructor(private readonly args: TopicSubscriptionArgs<T>) {
-    super(args.consumerTag, args.options?.prefetch ?? 1, args.emit, args.onDispose)
+    super(args.consumerTag, args.options?.prefetch ?? 1, args.emit, args.hooks)
   }
 
   protected async doAttach(factory: ChannelFactory): Promise<void> {
@@ -76,19 +76,9 @@ export class TopicSubscription<T> extends BaseConsumer {
     }
   }
 
-  protected handleBrokerCancel(): void {
-    // The exclusive queue vanished (its channel/connection is on the way down);
-    // the next `setup` declares a fresh one.
-    const { channel } = this
-    this.channel = null
-    this.consumerTag = null
-    this.emit({
-      event: 'coney.consumer_stopped',
-      level: 'info',
-      queue: this.queueName ?? '',
-      consumerTag: this.tag,
-    })
-    if (channel !== null) void channel.close().catch(() => {})
+  /** The exclusive queue of the CURRENT attach — a fresh one is declared by each. */
+  get queueLabel(): string {
+    return this.queueName ?? ''
   }
 
   protected async processDelivery(channel: Channel, raw: ConsumeMessage): Promise<void> {

@@ -25,6 +25,13 @@ export type ConeyLogEvent =
       prefetch: number
     }
   | { event: 'coney.consumer_stopped'; level: 'info'; queue: string; consumerTag: string }
+  | {
+      event: 'coney.consumer_reattach_failed'
+      level: 'warn'
+      queue: string
+      reason: string
+      retryInMs: number
+    }
   | { event: 'coney.subscription_reset'; level: 'warn'; topic: string; patterns: string[] }
   | {
       event: 'coney.subscription_error'

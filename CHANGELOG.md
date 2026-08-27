@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 During 0.x, a MINOR bump may contain breaking changes (called out here); PATCH
 releases are fixes only.
 
+## [0.3.0] - 2026-08-27
+
+### Fixed
+
+- A **broker-initiated consumer cancel no longer kills a consumer for good**. When the
+  broker cancels a consumer — its queue was deleted, or the queue's node failed — coney
+  used to detach the runtime and wait for the next connection `setup` to rebuild it. That
+  is only correct when the connection is going down too; when it stays UP nothing ever
+  calls `setup` again, so the consumer was dead for the rest of the process's life while
+  `Subscription.active` still read `true`, the connection kept publishing, and the only
+  trace was one info-level `coney.consumer_stopped` that looks exactly like an orderly
+  shutdown. The runtime now re-attaches on its own backoff loop (the reconnect policy's
+  curve), re-asserting the def's topology first because the queue is usually gone.
+- **A channel-level error no longer kills a consumer for good either.** amqplib delivers
+  a `null` message ONLY for a real `basic.cancel`, so a 404/406/403 that killed just the
+  consumer's channel — a retry publish to a bucket that is gone, a policy change — took a
+  disjoint path that detached the runtime with `active` still `true` and **no log line at
+  all**: the same failure as above, with even less trace. Every unexpected detach now
+  reaches the same re-attach loop.
+- **The re-attach re-declares the whole def, not just its queue.** A def's retry buckets
+  and its bound topic exchanges sit behind their own caches that only a reconnect clears,
+  so the first fix redeclared the queue and left them missing — the consumer came back
+  looking healthy and then lost or stranded its first retried message. Invalidation is
+  now transitive.
+- **A re-attach failure no longer breaks publishing.** The re-assert shares the topology
+  cache with the publish path, so a consumer-side failure (usually on `<q>.dead`, a bucket
+  or a binding — not the main queue) made every unrelated `publish()` for that def reject
+  until the next round. Failures from a background re-attach are no longer cached.
+- The backoff curve is now total: `reconnect: { initialDelayMs: 0 }` used to yield a `NaN`
+  delay after ~1000 rounds (`0 * Infinity`), and any delay above `TIMEOUT_MAX` was silently
+  clamped by `setTimeout` to 1 ms — both inverting "back off" into "retry immediately".
+- `close()` and `Subscription.cancel()` release a parked re-attach immediately instead of
+  letting its timer hold the runtime (and the user's handler closure) for up to
+  `maxDelayMs` after they resolved.
+- An orderly `close()` landing on a background re-attach no longer emits an error-level
+  `coney.topology_failed` for the RPC the close itself killed.
+
+### Added
+
+- `coney.consumer_reattach_failed` (warn; `queue`, `reason`, `retryInMs`) — one per failed
+  re-attach round, so a consumer that cannot come back is loud instead of silent. The log
+  union is now 22 events.
+
+### Changed
+
+Behaviour changes a caller can observe (0.x MINOR, called out per the policy above):
+
+- A detached consumer **comes back on its own**. Anything built on top of the old
+  behaviour has to go: a caller who watched for `coney.consumer_stopped` and re-subscribed
+  by hand now ends up with two consumers on the queue. Drop the workaround —
+  `coney.consumer_reattach_failed` is the signal to watch instead, and it only fires when
+  coney could not do it.
+- The re-attach loop is unbounded but no longer immortal: it stops once the connection is
+  terminally `closed` (an exhausted `reconnect.maxAttempts`), where previously it warned
+  once per `maxDelayMs` for the life of the process on a client already reporting
+  `state === 'closed'`.
+- `ConeyLogEvent` gained a member. Adapters that widen (`logger[e.level](e.event, e)`) are
+  unaffected, but an exhaustive `switch` on `e.event` with a `never` fallback stops
+  compiling until the new event is handled.
+
 ## [0.2.0] - 2026-08-26
 
 ### Added

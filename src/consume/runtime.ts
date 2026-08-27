@@ -13,6 +13,19 @@ import type { CancelOptions, CloseResult, Subscription } from './types.js'
 
 const DEFAULT_CANCEL_DRAIN_MS = 10_000
 
+/**
+ * Lifecycle callbacks the client wires into every runtime. An OBJECT, not positional
+ * parameters: both are `(runtime: BaseConsumer) => void`, so a transposed pair would
+ * type-check, lint and compile cleanly while silently trading "drop this consumer" for
+ * "bring it back" — a leaked handler closure and a resurrected consumer at once.
+ */
+export interface ConsumerHooks {
+  /** The runtime is gone for good (cancelled or disposed): drop it from the registry. */
+  onDispose: (runtime: BaseConsumer) => void
+  /** The runtime lost its channel without asking to: bring it back (spec §4). */
+  onDetached: (runtime: BaseConsumer) => void
+}
+
 /** State + behavior shared by the queue-consumer and topic-subscription runtimes. */
 export abstract class BaseConsumer {
   protected channel: Channel | ConfirmChannel | null = null
@@ -27,11 +40,22 @@ export abstract class BaseConsumer {
     protected readonly tag: string,
     protected readonly prefetchCount: number,
     protected readonly emit: LogEmitter,
-    private readonly onDispose: (runtime: BaseConsumer) => void,
+    private readonly hooks: ConsumerHooks,
   ) {}
+
+  /**
+   * Queue name for logs. Abstract because a subscription's is server-named and
+   * changes with every attach, while a queue consumer's is fixed by its def.
+   */
+  abstract get queueLabel(): string
 
   get active(): boolean {
     return this.activeFlag
+  }
+
+  /** True while the runtime holds a channel it can actually consume on. */
+  get attached(): boolean {
+    return this.channel !== null
   }
 
   /**
@@ -76,13 +100,24 @@ export abstract class BaseConsumer {
   /** Create the channel, declare what the consumer needs, start consuming. */
   protected abstract doAttach(factory: ChannelFactory): Promise<void>
 
-  /** Track a channel; detaches this runtime when the channel dies (reconnects re-attach via `setup`). */
+  /**
+   * Track a channel; a death the runtime did not ask for detaches it and hands off to
+   * recovery. Every deliberate teardown nulls `this.channel` BEFORE closing, so the
+   * identity check keeps this listener out of those paths: it fires only when the
+   * channel died on its own.
+   *
+   * The hand-off is what makes recovery cover more than one trigger. amqplib delivers
+   * `null` to a consumer callback ONLY for a real `basic.cancel`; a channel-level error
+   * (404, 406, 403 — a retry publish to a bucket that is gone, a policy change) takes a
+   * disjoint path that ends here. Without this, such a runtime sat dead for the rest of
+   * the process's life with `active` still reading `true` and nothing logged at all.
+   */
   protected adoptChannel(channel: Channel | ConfirmChannel): void {
     channel.on('close', () => {
-      if (this.channel === channel) {
-        this.channel = null
-        this.consumerTag = null
-      }
+      if (this.channel !== channel) return
+      this.channel = null
+      this.consumerTag = null
+      if (this.activeFlag) this.hooks.onDetached(this)
     })
     this.channel = channel
   }
@@ -119,8 +154,33 @@ export abstract class BaseConsumer {
     raw: ConsumeMessage,
   ): Promise<void>
 
-  /** Broker-initiated cancel (queue deleted): drop the channel; the next `setup` re-attaches. */
-  protected abstract handleBrokerCancel(): void
+  /**
+   * Broker-initiated cancel — a `null` delivery (spec §4): the consumer is GONE
+   * because its queue was deleted or the queue's node failed, while this connection
+   * and every other channel on it stay perfectly healthy.
+   *
+   * That last clause is the whole reason this hands off to `onDetached`. The
+   * tempting reading is that a cancel means the connection is on its way down and the
+   * next `setup` will rebuild everything — true for ONE of the causes, and for the
+   * others nothing ever calls `setup` again. The runtime then sat detached for the
+   * rest of the process's life while `active` still read `true` and the only trace
+   * was a single info line that looks exactly like an orderly shutdown.
+   */
+  private handleBrokerCancel(): void {
+    const { channel } = this
+    this.channel = null
+    this.consumerTag = null
+    this.emit({
+      event: 'coney.consumer_stopped',
+      level: 'info',
+      queue: this.queueLabel,
+      consumerTag: this.tag,
+    })
+    if (channel !== null) void channel.close().catch(() => {})
+    // Not while inactive: `cancel()`/`close()` flip the flag before cancelling, so a
+    // broker cancel racing our own teardown must not restart what is being torn down.
+    if (this.activeFlag) this.hooks.onDetached(this)
+  }
 
   /** `basic.cancel` + stop taking new deliveries; never throws. */
   async stopDelivery(): Promise<void> {
@@ -213,7 +273,7 @@ export abstract class BaseConsumer {
 
   private async doCancel(drainMs: number): Promise<CloseResult> {
     this.activeFlag = false
-    this.onDispose(this)
+    this.hooks.onDispose(this)
     await this.stopDelivery()
     const drained = await this.waitInFlight(Date.now() + drainMs)
     if (!drained) this.abortInFlight()
