@@ -12,15 +12,17 @@ An opinionated RabbitMQ toolkit for Node.js.
 ## Install
 
 ```sh
-yarn add @lorvel/coney amqplib
+yarn add coney amqplib
 ```
 
-`amqplib >= 1.1 < 3` is a peer dependency. Requires Node ≥ 20.19 (ESM-only package; `require()` works from 20.19 up). Until the public release the package lives in a private GitLab registry.
+`amqplib >= 1.1 < 3` is a peer dependency. Requires Node ≥ 20.19 (ESM-only package; `require()` works from 20.19 up).
+
+Coming from coney 2.x? 3.x is a ground-up rewrite with a new API and wire format — see [Migrating from 2.x](#migrating-from-2x).
 
 ## Quickstart
 
 ```ts
-import { createConey, defineQueue } from '@lorvel/coney'
+import { createConey, defineQueue } from 'coney'
 import { z } from 'zod'
 
 const EmbedKu = defineQueue({
@@ -43,7 +45,7 @@ No broker at hand? `docker compose -f docker-compose.test.yml up -d --wait` star
 ## Topics
 
 ```ts
-import { defineTopic } from '@lorvel/coney'
+import { defineTopic } from 'coney'
 
 const Events = defineTopic({ name: 'events', schema: DomainEvent })
 
@@ -144,7 +146,7 @@ consumer pipeline (schema gate, ladder arithmetic, `timeoutMs`), returning the
 outcome (`ack` / `retry` / `dead` / `dropped`):
 
 ```ts
-import { createConeyMock } from '@lorvel/coney'
+import { createConeyMock } from 'coney'
 
 const mock = createConeyMock({ prefix: 'lorvel' })
 await mock.queue(EmbedKu).consume(handler)

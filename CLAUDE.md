@@ -1,4 +1,4 @@
-# Project: coney (@lorvel/coney)
+# Project: coney
 
 An opinionated RabbitMQ toolkit for Node.js. `docs/design.md` is the canonical spec and
 `docs/api/coney.d.ts` the enforced public API contract — read `CONTRIBUTING.md` for the

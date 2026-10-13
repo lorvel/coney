@@ -1,6 +1,6 @@
 // Shared catalog — pure values, no client, no I/O (per service today; a shared package later).
 import { z } from 'zod'
-import { defineQueue, defineTopic } from '@lorvel/coney'
+import { defineQueue, defineTopic } from 'coney'
 
 export const EmbedKuJob = z.object({ kuId: z.string().uuid() })
 export const EmbedTaskJob = z.object({ taskId: z.string().uuid() })

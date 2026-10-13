@@ -1,5 +1,5 @@
 // Example 3 — one-off producer script: publish N messages, then close without losing the tail.
-import { createConey } from '@lorvel/coney'
+import { createConey } from 'coney'
 import { EmbedKu, EmbedTask } from './defs.js'
 import { logger } from './logger.js'
 

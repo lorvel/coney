@@ -1,5 +1,5 @@
 // Example 5 — domain events: writers publish signals; instances fan out over SSE; a durable notifier gets retry/dead.
-import { createConey } from '@lorvel/coney'
+import { createConey } from 'coney'
 import { Events, NotifyOnTaskEvents, type DomainEvent } from './defs.js'
 import { logger } from './logger.js'
 

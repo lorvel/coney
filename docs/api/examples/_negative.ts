@@ -1,6 +1,6 @@
 // Negative litmus: every line below MUST be a type error (tsc flags unused @ts-expect-error).
 import { z } from 'zod'
-import { createConey, defineQueue, defineTopic, type ConeyLogEvent } from '@lorvel/coney'
+import { createConey, defineQueue, defineTopic, type ConeyLogEvent } from 'coney'
 import { EmbedKu, Events } from './defs.js'
 
 const mq = createConey({ url: 'amqp://localhost' })

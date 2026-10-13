@@ -1,6 +1,6 @@
 {
-  "name": "@lorvel/coney",
-  "version": "0.3.0",
+  "name": "coney",
+  "version": "3.0.0",
   "description": "An opinionated RabbitMQ toolkit for Node.js: work queues with broker-held retry ladders and dead-letter queues, publisher confirms, automatic reconnection, graceful drain, and topic pub/sub.",
   "keywords": [
     "rabbitmq",
@@ -20,14 +20,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://gitlab.com/lorvel/packages/coney.git"
+    "url": "git+https://github.com/lorvel/coney.git"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "default": "./dist/index.js"
     }
   },
   "files": [

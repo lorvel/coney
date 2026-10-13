@@ -22,12 +22,13 @@ For the broker-backed tests, start a throwaway RabbitMQ with
 
 1. Bump `version` in `package.json` and turn the unreleased notes in
    `CHANGELOG.md` into a dated section for that version.
-2. Commit, push, and wait for the pipeline to pass.
-3. `yarn release` — tags `v<version>` and pushes the tag; the tag pipeline runs
-   the full validation again and publishes to the GitLab package registry.
+2. Commit, push, and wait for CI to pass.
+3. `yarn release` — tags `v<version>` and pushes the tag; the tag run repeats
+   the full validation and then publishes to npm from GitHub Actions (npm
+   trusted publishing — no npm token is stored in the repository or its CI
+   secrets).
 
-During 0.x, a MINOR bump may be breaking (say so in the changelog); PATCH is
-fixes only.
+Versions follow semver: a breaking change ships only in a MAJOR release.
 
 ## Ground rules
 

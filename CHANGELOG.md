@@ -4,8 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-During 0.x, a MINOR bump may contain breaking changes (called out here); PATCH
-releases are fixes only.
+
+The 0.x entries below are the private `@lorvel/coney` releases the rewrite went
+through before going public; in that line a MINOR bump could contain breaking
+changes (called out in its entry).
+
+## [3.0.0] - 2026-10-13
+
+First public release of the ground-up rewrite, published to npm as `coney`. It
+replaces the unmaintained coney 2.x line.
+
+### Changed
+
+- **Breaking for coney 2.x users: neither the API nor the wire format is
+  compatible with 2.x.** Queue names and the retry topology differ, so 2.x and 3.x
+  must never consume the same queue. The API mapping and the safe per-queue cutover
+  order are in [Migrating from 2.x](https://github.com/lorvel/coney#migrating-from-2x).
+- The package is named `coney` (it was `@lorvel/coney` during the private 0.x line)
+  and is published from [github.com/lorvel/coney](https://github.com/lorvel/coney)
+  by GitHub Actions when a version tag is pushed.
+- The library code is identical to `@lorvel/coney@0.3.0`: nothing in `src/` changed
+  for this release. The one behavioural difference is the packaging fix below.
+
+### Fixed
+
+- **`require('coney')` works.** The `exports` map declared no condition that
+  `require()` matches (only `types` and `import`), so it threw
+  `ERR_PACKAGE_PATH_NOT_EXPORTED` although the README promised it from Node 20.19 up.
+  The entry now uses the `default` condition, which `import` and `require()` both
+  match.
 
 ## [0.3.0] - 2026-08-27
 

@@ -1,5 +1,5 @@
 // Example 2 — backend-api / mcp-service: best-effort enqueue from a request handler.
-import { createConey, ConeySchemaError } from '@lorvel/coney'
+import { createConey, ConeySchemaError } from 'coney'
 import { EmbedKu } from './defs.js'
 import { logger } from './logger.js'
 

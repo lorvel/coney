@@ -1,5 +1,5 @@
 // Example 1 — embedding-worker: two consumers, prefetch, handler timeout, graceful drain.
-import { createConey, UnrecoverableError } from '@lorvel/coney'
+import { createConey, UnrecoverableError } from 'coney'
 import { EmbedKu, EmbedTask } from './defs.js'
 import { logger } from './logger.js'
 

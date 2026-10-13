@@ -13,7 +13,7 @@
     "skipLibCheck": false,
     "esModuleInterop": true,
     "paths": {
-      "@lorvel/coney": ["./coney.d.ts"]
+      "coney": ["./coney.d.ts"]
     }
   },
   "include": ["coney.d.ts", "examples/**/*.ts"]

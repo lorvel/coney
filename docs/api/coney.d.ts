@@ -1,5 +1,5 @@
 /**
- * @lorvel/coney — public API surface (v0.1). This file IS the contract; nothing
+ * coney — public API surface (v0.1). This file IS the contract; nothing
  * here references amqplib types. "wire name" = `<prefix>.<name>` (or `<name>`);
  * "attempt" = `x-retries` + 1; delivery is at-least-once — handlers must be idempotent.
  */

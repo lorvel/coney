@@ -2,11 +2,11 @@
 
 ## Supported versions
 
-Only the latest 0.x release receives fixes.
+Only the latest 3.x release receives fixes. coney 2.x is unmaintained.
 
 ## Reporting a vulnerability
 
-Email tutv95@gmail.com — please do not open a public issue for security reports.
+Email security@lorvel.ai — please do not open a public issue for security reports.
 
 ## Posture
 

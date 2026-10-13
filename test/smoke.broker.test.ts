@@ -65,7 +65,7 @@ test(
       const jobs = mq.queue(def)
       const publishes: Promise<void>[] = []
       for (let i = 0; i < 200; i += 1) publishes.push(jobs.publish({ i }))
-      // The point of this leg (KU-156 class of bug): close() is called while confirms
+      // The point of this leg: close() is called while confirms
       // are still outstanding — the tail must be flushed, not dropped.
       const closeResult = await mq.close()
       assert.deepEqual(closeResult, { drained: true, inFlight: 0 })

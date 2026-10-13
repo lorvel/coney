@@ -1,0 +1,104 @@
+name: CI
+
+# Every push and pull request is validated. A pushed version tag (`v*`) is validated the
+# same way and then published to npm by the `publish` job.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: yarn install --frozen-lockfile
+      - run: yarn format:check
+      - run: yarn lint
+      - run: yarn typecheck
+      - run: yarn typecheck:design
+      - run: yarn build
+      - run: yarn test
+      - run: node scripts/diff-api.mjs
+      # Rehearse the parts of the `publish` job that need no npm credentials, so a break
+      # shows up on an ordinary push instead of on the release tag: the npm upgrade, and
+      # packing through the `prepare` script.
+      - run: npm install -g npm@^11.5.1
+      - run: npm pack --dry-run
+
+  # The broker-backed suite against a throwaway RabbitMQ service container, reached
+  # through its published ports on the runner's loopback. A dedicated user rather than
+  # `guest`, so the job does not depend on how the image treats logins from outside the
+  # container. GitHub starts the steps as soon as the container is created;
+  # scripts/wait-broker.mjs is the readiness gate.
+  test-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      rabbitmq:
+        image: rabbitmq:4.3-management
+        env:
+          RABBITMQ_DEFAULT_USER: coney
+          RABBITMQ_DEFAULT_PASS: coney-it
+        ports:
+          - 5672:5672
+          - 15672:15672
+    env:
+      RABBITMQ_URL: amqp://coney:coney-it@127.0.0.1:5672
+      RABBITMQ_MGMT_URL: http://coney:coney-it@127.0.0.1:15672
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: yarn install --frozen-lockfile
+      - run: node scripts/wait-broker.mjs
+      - run: yarn test:integration
+
+  # Publish to npm, only when a version tag is pushed and only after both jobs above
+  # passed for that tag. Authentication is npm trusted publishing (OIDC): no npm token is
+  # stored in the repository or its CI secrets. npm matches this repository AND this
+  # workflow's file name against the package's trusted publisher, so renaming this file
+  # breaks publishing until the trusted publisher on npmjs.com names the new file. A
+  # publisher cannot be edited, only recreated: tick `npm publish` under "Allowed
+  # actions", and publish within 2 days or npm expires it.
+  # setup-node gets no `registry-url` on purpose: it would write an `.npmrc` holding a
+  # `${NODE_AUTH_TOKEN}` placeholder, and Yarn 1 — which `npm publish` runs through the
+  # `prepare` script — aborts on a placeholder it cannot resolve. npm publishes to its
+  # default registry and needs no `.npmrc` for the OIDC exchange.
+  # package.json "version" must match the tag (`yarn release` tags from it) — checked
+  # here rather than trusted, so a `git tag` without the version bump cannot ship a
+  # package whose version does not match the commit it was built from.
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, test-integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Check that package.json matches the tag
+        run: |
+          PKG_TAG="v$(node -p "require('./package.json').version")"
+          if [ "$PKG_TAG" != "$GITHUB_REF_NAME" ]; then
+            echo "refusing to publish: package.json is $PKG_TAG but the tag is $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+      - run: npm install -g npm@^11.5.1
+      - run: yarn install --frozen-lockfile
+      - run: yarn build
+      # Verbose on purpose: npm reports a failed OIDC exchange only at that level.
+      - run: npm publish --loglevel verbose

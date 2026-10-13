@@ -8,24 +8,24 @@ const infoEvent: ConeyLogEvent = { event: 'coney.connected', level: 'info', url:
 describe('redactUrl', () => {
   it('masks the password of a parseable URL', () => {
     assert.equal(
-      redactUrl('amqp://lorvel:s3cr3t@home-dev:5672/lorvel'),
-      'amqp://lorvel:***@home-dev:5672/lorvel',
+      redactUrl('amqp://lorvel:s3cr3t@rabbit-1:5672/lorvel'),
+      'amqp://lorvel:***@rabbit-1:5672/lorvel',
     )
     assert.equal(redactUrl('amqps://u:p@h/%2f'), 'amqps://u:***@h/%2f')
   })
 
   it('leaves URLs without credentials untouched', () => {
-    assert.equal(redactUrl('amqp://home-dev:5672/lorvel'), 'amqp://home-dev:5672/lorvel')
+    assert.equal(redactUrl('amqp://rabbit-1:5672/lorvel'), 'amqp://rabbit-1:5672/lorvel')
   })
 
   it('masks a whole password-less userinfo — token brokers put the secret there', () => {
-    assert.equal(redactUrl('amqp://user@home-dev'), 'amqp://***@home-dev')
+    assert.equal(redactUrl('amqp://user@rabbit-1'), 'amqp://***@rabbit-1')
     assert.equal(
       redactUrl('amqps://eyJhbGciOiJIUzI1NiJ9@rabbit.example.com/vhost'),
       'amqps://***@rabbit.example.com/vhost',
     )
     // The two redactors must not disagree about the same string.
-    assert.equal(redactUrl('amqp://user@home-dev'), redactText('amqp://user@home-dev'))
+    assert.equal(redactUrl('amqp://user@rabbit-1'), redactText('amqp://user@rabbit-1'))
   })
 
   it('falls back to the text redactor for unparseable input', () => {

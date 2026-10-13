@@ -1,6 +1,6 @@
 // Example 4 — service test suite: one in-memory client replaces the 8 divergent `vi.mock(...)` stubs.
 import assert from 'node:assert/strict'
-import { createConeyMock, UnrecoverableError } from '@lorvel/coney'
+import { createConeyMock, UnrecoverableError } from 'coney'
 import { EmbedKu, Events } from './defs.js'
 
 const mq = createConeyMock({ prefix: 'lorvel' })
