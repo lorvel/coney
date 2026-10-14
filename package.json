@@ -1,6 +1,6 @@
 {
   "name": "coney",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "An opinionated RabbitMQ toolkit for Node.js: work queues with broker-held retry ladders and dead-letter queues, publisher confirms, automatic reconnection, graceful drain, and topic pub/sub.",
   "keywords": [
     "rabbitmq",

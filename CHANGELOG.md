@@ -9,7 +9,7 @@ The 0.x entries below are the private `@lorvel/coney` releases the rewrite went
 through before going public; in that line a MINOR bump could contain breaking
 changes (called out in its entry).
 
-## [Unreleased]
+## [3.1.0] - 2026-10-14
 
 ### Added
 
