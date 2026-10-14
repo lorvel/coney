@@ -126,7 +126,7 @@ export interface QueueHandle<T> {
   /** Passive inspection (no topology changes). */
   inspect(options?: OpsOptions): Promise<QueueStats>
 
-  /** Move messages from `<name>.dead` back to the main queue (attempt reset, `messageId` kept), up to `limit` (default: all present at call time). On `timeoutMs` the replay STOPS between messages: what was already moved stays moved. */
+  /** Move messages from `<name>.dead` back to the main queue (attempt reset, `messageId` kept), up to `limit` (default: all present at call time). On `timeoutMs` the replay STOPS between messages: what was already moved stays moved. The `x-expires-at` deadline is kept: a message replayed after it is dropped on arrival (`coney.message_expired`). */
   replayDead(
     options?: OpsOptions & { readonly limit?: number },
   ): Promise<{ readonly replayed: number }>

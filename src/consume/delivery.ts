@@ -5,6 +5,7 @@
  */
 
 import type { ConfirmChannel, ConsumeMessage } from 'amqplib'
+import { deadlineOf } from '../core/codec.js'
 import { toError } from '../core/errors.js'
 import type { DeliveryContext } from './pipeline.js'
 
@@ -23,6 +24,7 @@ export function contextOf(raw: ConsumeMessage): DeliveryContext {
     const parsed = new Date(publishedAtRaw)
     if (!Number.isNaN(parsed.getTime())) publishedAt = parsed
   }
+  const expiresAt = deadlineOf(headers)
   return {
     // The contract requires a string id; a foreign message without one gets ''
     // (a generated id would not be stable across redeliveries).
@@ -33,6 +35,7 @@ export function contextOf(raw: ConsumeMessage): DeliveryContext {
     routingKey: raw.fields.routingKey,
     headers,
     ...(publishedAt !== undefined ? { publishedAt } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
     ...(typeof properties.appId === 'string' && properties.appId !== ''
       ? { appId: properties.appId }
       : {}),
@@ -65,8 +68,9 @@ export function republishOptions(
   const properties = (rawProperties ?? {}) as Record<string, unknown>
   const options: Record<string, unknown> = { headers }
   // Whitelisted pass-through: userId is dropped (RabbitMQ rejects a mismatch with
-  // the republishing connection's user), expiration too (a per-message TTL must not
-  // silently expire messages parked in retry/dead queues).
+  // the republishing connection's user), the AMQP `expiration` too (a broker-held
+  // per-message TTL must not silently expire messages parked in retry/dead queues;
+  // coney's own deadline travels as the `x-expires-at` header instead).
   for (const key of [
     'messageId',
     'timestamp',

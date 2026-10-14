@@ -107,6 +107,57 @@ describe('encodeMessage', () => {
     )
   })
 
+  it('stamps x-expires-at = x-published-at + ttlMs from the same clock reading', () => {
+    const { properties } = encodeMessage({
+      body: 1,
+      type: 't',
+      appId: undefined,
+      options: { ttlMs: 1_500 },
+      now: NOW,
+    })
+    assert.equal(properties.headers['x-published-at'], NOW.toISOString())
+    assert.equal(properties.headers['x-expires-at'], new Date(NOW.getTime() + 1_500).toISOString())
+  })
+
+  it('sets no x-expires-at without ttlMs', () => {
+    const { properties } = encodeMessage({
+      body: 1,
+      type: 't',
+      appId: undefined,
+      options: { messageId: 'id' },
+      now: NOW,
+    })
+    assert.ok(!('x-expires-at' in properties.headers))
+  })
+
+  it('rejects a ttlMs that is not a positive finite number <= 2^31-1', () => {
+    for (const ttlMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31, '100']) {
+      assert.throws(
+        () =>
+          encodeMessage({
+            body: 1,
+            type: 't',
+            appId: undefined,
+            options: { ttlMs: ttlMs as number },
+            now: NOW,
+          }),
+        (err: unknown) => err instanceof ConeyConfigError && /ttlMs/.test(err.message),
+        `ttlMs ${String(ttlMs)}`,
+      )
+    }
+    const { properties } = encodeMessage({
+      body: 1,
+      type: 't',
+      appId: undefined,
+      options: { ttlMs: 2 ** 31 - 1 },
+      now: NOW,
+    })
+    assert.equal(
+      properties.headers['x-expires-at'],
+      new Date(NOW.getTime() + 2 ** 31 - 1).toISOString(),
+    )
+  })
+
   it('maps stringify THROWS (circular, BigInt, throwing toJSON) to ConeyConfigError too', () => {
     const circular: Record<string, unknown> = {}
     circular['self'] = circular

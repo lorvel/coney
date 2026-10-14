@@ -134,6 +134,20 @@ export class QueueConsumer<T> extends BaseConsumer {
       this.ack(channel, raw, context)
       return
     }
+    if (outcome.kind === 'expired') {
+      // Dropped on purpose — never dead-lettered (spec §4): an expired message is
+      // one nobody wants run any more, and replaying it would only expire it again.
+      this.ack(channel, raw, context)
+      this.emit({
+        event: 'coney.message_expired',
+        level: 'warn',
+        queue: this.args.wire,
+        messageId: context.id,
+        attempt: context.attempt,
+        expiresAt: outcome.expiresAt.toISOString(),
+      })
+      return
+    }
     if (outcome.kind === 'retry') {
       const confirmed = await this.publishInternal(channel, {
         exchange: this.args.bucketWire(outcome.delayMs),

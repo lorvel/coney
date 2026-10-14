@@ -95,7 +95,7 @@ flowchart LR
   D -->|replayDead| Q
 ```
 
-Retries live in **shared buckets keyed by the delay value**: one fanout exchange + one TTL queue per _distinct_ delay across all your queues (`retry: { delays: [10_000, 60_000] }` → buckets `retry.10s` and `retry.1m`). An expired message is dead-lettered to the default exchange with the routing key it was published with — the consuming queue's own name — so it returns exactly where it came from. Constant broker footprint, exact timing, no head-of-line blocking (a bucket holds messages of a single TTL), and no plugins. Dead letters stay **per queue** (`<name>.dead`) with an `x-reason` header (`schema: …`, `unrecoverable: …`, `exhausted after N attempts: …`, `decode: …`).
+Retries live in **shared buckets keyed by the delay value**: one fanout exchange + one TTL queue per _distinct_ delay across all your queues (`retry: { delays: [10_000, 60_000] }` → buckets `retry.10s` and `retry.1m`). When a bucket's TTL runs out, the message is dead-lettered to the default exchange with the routing key it was published with — the consuming queue's own name — so it returns exactly where it came from. Constant broker footprint, exact timing, no head-of-line blocking (a bucket holds messages of a single TTL), and no plugins. Dead letters stay **per queue** (`<name>.dead`) with an `x-reason` header (`schema: …`, `unrecoverable: …`, `exhausted after N attempts: …`, `decode: …`).
 
 **Topics** are plain topic exchanges. `subscribe()` binds an exclusive server-named queue (per instance, reset on reconnect); a queue def with `bindings` is a durable subscriber — competing consumers, retry ladder and dead queue included:
 
@@ -116,6 +116,7 @@ The outcome of a delivery is implicit in how the handler settles — there is no
 | What happens                         | Outcome                                                                              |
 | ------------------------------------ | ------------------------------------------------------------------------------------ |
 | body is not valid JSON               | dead, `x-reason: decode: …`                                                          |
+| the `ttlMs` deadline has passed      | ack without calling the handler, `coney.message_expired` — no retry, no dead         |
 | `schema.parse` throws                | dead, `x-reason: schema: …` — the retry ladder is **not** consumed                   |
 | handler resolves                     | ack                                                                                  |
 | handler throws `UnrecoverableError`  | dead immediately, `x-reason: unrecoverable: …`                                       |
@@ -126,6 +127,7 @@ Invariants worth knowing:
 
 - The retry/dead publish is **confirmed before the original message is acked**. A crash in between yields a duplicate, never a loss — delivery is at-least-once, so handlers must be idempotent.
 - `timeoutMs` fails the message immediately (retry/dead as above) and aborts `msg.signal`; the handler's eventual settlement is only logged. Pass `msg.signal` to your fetch/db calls to actually stop the work.
+- `ttlMs` on publish sets an absolute deadline (`x-expires-at`). Retries do not extend it, and it is checked against the consumer's clock, once per delivery, before the handler: a handler that starts in time and fails late is retried or dead-lettered as usual. It keeps a stale message away from your handler; it does not remove it from the queue sooner.
 - Attempt counting is broker-held (`x-retries` header): `msg.attempt` is 1 on first delivery and survives reconnects and process restarts. Broker redeliveries (unacked messages after a connection loss) do not increment it.
 
 ## Reconnection
@@ -198,17 +200,17 @@ Defs are client-free: keep them in a shared catalog module and pass them to any 
 
 ### Queue and topic handles
 
-| Method                                               | What                                                                                                                 |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `queue.publish(body, options?)`                      | Schema-validated, confirm-backed publish. `PublishOptions`: `messageId`, `headers`, `persistent`, `timeoutMs`.       |
-| `queue.consume(handler, options?)`                   | Attach a consumer on its own channel; `ConsumeOptions`: `prefetch` (default 1), `timeoutMs`. Returns `Subscription`. |
-| `queue.inspect(options?)`                            | `{ ready, consumers, dead }` — passive, no topology changes.                                                         |
-| `queue.replayDead({ limit? })` / `queue.purgeDead()` | Move dead letters back to the main queue (attempt reset, `messageId` kept) / delete them.                            |
-| … all four take `{ timeoutMs }`                      | ONE budget for the call (connection wait + round-trips); `replayDead` stops between messages, keeping what it moved. |
-| `topic.publish(routingKey, body, options?)`          | Publish to the exchange; no matching binding → confirmed and dropped.                                                |
-| `topic.subscribe(patterns, handler, options?)`       | Exclusive per-instance subscription (`*` = one word, `#` = zero or more). Returns `Subscription`.                    |
+| Method                                               | What                                                                                                                    |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `queue.publish(body, options?)`                      | Schema-validated, confirm-backed publish. `PublishOptions`: `messageId`, `headers`, `persistent`, `timeoutMs`, `ttlMs`. |
+| `queue.consume(handler, options?)`                   | Attach a consumer on its own channel; `ConsumeOptions`: `prefetch` (default 1), `timeoutMs`. Returns `Subscription`.    |
+| `queue.inspect(options?)`                            | `{ ready, consumers, dead }` — passive, no topology changes.                                                            |
+| `queue.replayDead({ limit? })` / `queue.purgeDead()` | Move dead letters back to the main queue (attempt reset, `messageId` kept, `ttlMs` deadline kept) / delete them.        |
+| … all four take `{ timeoutMs }`                      | ONE budget for the call (connection wait + round-trips); `replayDead` stops between messages, keeping what it moved.    |
+| `topic.publish(routingKey, body, options?)`          | Publish to the exchange; no matching binding → confirmed and dropped.                                                   |
+| `topic.subscribe(patterns, handler, options?)`       | Exclusive per-instance subscription (`*` = one word, `#` = zero or more). Returns `Subscription`.                       |
 
-The handler receives `Message<T>`: `body` (validated), `id`, `attempt`, `redelivered`, `routingKey`, `headers`, `publishedAt?`, `appId?`, `signal`. A `Subscription` has `active` and `cancel({ drainMs? })`.
+The handler receives `Message<T>`: `body` (validated), `id`, `attempt`, `redelivered`, `routingKey`, `headers`, `publishedAt?`, `expiresAt?`, `appId?`, `signal`. A `Subscription` has `active` and `cancel({ drainMs? })`.
 
 ### Errors
 
@@ -226,7 +228,7 @@ All library errors extend `ConeyError` and carry a stable `code`, so `switch (er
 
 ### Log events
 
-`log` is a single typed callback receiving the exhaustive `ConeyLogEvent` union (22 events, fixed level each — connection lifecycle, topology, consumer lifecycle, retry/dead per message, drain). Credentials in URLs are always redacted. One-line adapter for any structured logger:
+`log` is a single typed callback receiving the exhaustive `ConeyLogEvent` union (23 events, fixed level each — connection lifecycle, topology, consumer lifecycle, retry/dead/expired per message, drain). Credentials in URLs are always redacted. One-line adapter for any structured logger:
 
 ```ts
 createConey({ url, log: (e) => logger[e.level](e.event, e) })
@@ -236,7 +238,7 @@ Default sink: `warn`/`error` as JSON lines on stderr, the rest dropped; `log: fa
 
 ### Test double
 
-`createConeyMock({ prefix?, name? })` returns a `ConeyMock` (a full `Coney`): `published` (every recorded publish), `deliver(def, body, options?)` and `deliverTopic(def, routingKey, body, options?)` (run the real pipeline, return `DeliveryOutcome`), `reset()`. `close()` mirrors the real lifecycle — state `'closed'`, registrations deactivated, gated calls reject with `ConeyClosedError`.
+`createConeyMock({ prefix?, name? })` returns a `ConeyMock` (a full `Coney`): `published` (every recorded publish), `deliver(def, body, options?)` and `deliverTopic(def, routingKey, body, options?)` (run the real pipeline, return `DeliveryOutcome`; `options.expiresAt` simulates a TTL deadline), `reset()`. `close()` mirrors the real lifecycle — state `'closed'`, registrations deactivated, gated calls reject with `ConeyClosedError`.
 
 ## FAQ
 

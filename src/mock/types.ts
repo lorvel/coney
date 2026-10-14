@@ -25,6 +25,8 @@ export type DeliveryOutcome =
   | { readonly outcome: 'dead'; readonly reason: string; readonly error?: unknown }
   /** Subscriptions only: the handler threw and the message was dropped. */
   | { readonly outcome: 'dropped'; readonly error: unknown }
+  /** The message's deadline had passed: acked without calling the handler. */
+  | { readonly outcome: 'expired' }
 
 export interface DeliverOptions {
   /** Simulated attempt number. Default `1`. */
@@ -32,9 +34,11 @@ export interface DeliverOptions {
   readonly messageId?: string
   readonly headers?: Readonly<Record<string, HeaderValue>>
   readonly redelivered?: boolean
+  /** Simulated `x-expires-at` deadline ({@link PublishOptions.ttlMs}); in the past → `{ outcome: 'expired' }`. Default: none. */
+  readonly expiresAt?: Date
 }
 
-/** In-memory {@link Coney}: `publish` records, `consume`/`subscribe` register, {@link ConeyMock.deliver} runs the real consumer pipeline (schema gate, ladder, `timeoutMs`). `close()` mirrors the real lifecycle: state `'closed'`, registrations deactivated, gated operations reject with {@link ConeyClosedError}. */
+/** In-memory {@link Coney}: `publish` records, `consume`/`subscribe` register, {@link ConeyMock.deliver} runs the real consumer pipeline (expiry gate, schema gate, ladder, `timeoutMs`). `close()` mirrors the real lifecycle: state `'closed'`, registrations deactivated, gated operations reject with {@link ConeyClosedError}. */
 export interface ConeyMock extends Coney {
   /** Every publish since creation or the last {@link ConeyMock.reset}, in order. */
   readonly published: readonly PublishedRecord[]

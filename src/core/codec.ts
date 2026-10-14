@@ -2,6 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { ConeyConfigError } from './errors.js'
+import { validateDurationMs } from './time.js'
 
 /** AMQP header values the library accepts (a flat subset of the AMQP field table). */
 export type HeaderValue = string | number | boolean | null
@@ -15,6 +16,24 @@ export interface PublishOptions {
   readonly persistent?: boolean
   /** Overrides {@link ConeyOptions.publishTimeoutMs} for this call (finite, <= 2^31-1). */
   readonly timeoutMs?: number
+  /** Time to live in ms (positive, finite, <= 2^31-1): an absolute deadline stamped as the `x-expires-at` header at publish; retries never extend it. Checked once per delivery, before the handler, against the CONSUMER's clock: a delivery past it is acked without calling the handler and logged as `coney.message_expired` (no retry, no dead letter). A handler that starts in time and fails late follows the normal retry/dead outcome. Default: no deadline. */
+  readonly ttlMs?: number
+}
+
+/**
+ * The `x-expires-at` deadline of a delivery, or `undefined` for none. Only a value
+ * that `Date#toISOString()` reproduces character for character is a deadline.
+ * Strict on purpose: `new Date()` alone reads `'0'` or `'Oct 14'` as dates in
+ * 2000/2001, zone-less strings in local time, and rolls `2026-02-31` over into
+ * March — each would drop a foreign producer's message on a value it never meant
+ * as a deadline.
+ */
+export function deadlineOf(headers: Readonly<Record<string, unknown>>): Date | undefined {
+  const raw = headers['x-expires-at']
+  if (typeof raw !== 'string') return undefined
+  const parsed = new Date(raw)
+  if (Number.isNaN(parsed.getTime())) return undefined
+  return parsed.toISOString() === raw ? parsed : undefined
 }
 
 /** The amqplib publish options the codec produces (a plain object — no amqplib types). */
@@ -37,8 +56,8 @@ export interface EncodedMessage {
 
 /**
  * Encode a body and publish options into wire content + AMQP properties.
- * Throws {@link ConeyConfigError} for non-JSON-serializable bodies and for user
- * headers with reserved `x-` keys. No I/O.
+ * Throws {@link ConeyConfigError} for non-JSON-serializable bodies, for user
+ * headers with reserved `x-` keys and for an invalid `ttlMs`. No I/O.
  */
 export function encodeMessage(args: {
   body: unknown
@@ -49,6 +68,7 @@ export function encodeMessage(args: {
   now: Date
 }): EncodedMessage {
   const { body, type, appId, options, now } = args
+  if (options?.ttlMs !== undefined) validateDurationMs(options.ttlMs, 'ttlMs', { positive: true })
   const json = stringifyBody(body)
   const headers: Record<string, unknown> = {}
   if (options?.headers !== undefined) {
@@ -60,6 +80,10 @@ export function encodeMessage(args: {
     }
   }
   headers['x-published-at'] = now.toISOString()
+  // Same clock reading as x-published-at: the deadline is exactly publish time + ttlMs.
+  if (options?.ttlMs !== undefined) {
+    headers['x-expires-at'] = new Date(now.getTime() + options.ttlMs).toISOString()
+  }
   return {
     content: Buffer.from(json, 'utf8'),
     properties: {

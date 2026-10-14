@@ -23,6 +23,8 @@ export interface Message<T> {
   readonly headers: Readonly<Record<string, unknown>>
   /** From the `x-published-at` header (ms precision); absent for messages from foreign producers. */
   readonly publishedAt?: Date
+  /** From the `x-expires-at` header ({@link PublishOptions.ttlMs}); absent when the message has no deadline. A handler only ever sees a message whose deadline had not passed when it was delivered. */
+  readonly expiresAt?: Date
   /** AMQP `appId` — the `name` of the publishing client, if any. */
   readonly appId?: string
   /** Aborted when `timeoutMs` elapses or the close drain deadline passes — pass it to fetch/db calls. */

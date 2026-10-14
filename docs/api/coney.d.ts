@@ -193,6 +193,8 @@ export interface PublishOptions {
   readonly persistent?: boolean
   /** Overrides {@link ConeyOptions.publishTimeoutMs} for this call (finite, <= 2^31-1). */
   readonly timeoutMs?: number
+  /** Time to live in ms (positive, finite, <= 2^31-1): an absolute deadline stamped as the `x-expires-at` header at publish; retries never extend it. Checked once per delivery, before the handler, against the CONSUMER's clock: a delivery past it is acked without calling the handler and logged as `coney.message_expired` (no retry, no dead letter). A handler that starts in time and fails late follows the normal retry/dead outcome. Default: no deadline. */
+  readonly ttlMs?: number
 }
 
 // ── Consuming ──
@@ -212,6 +214,8 @@ export interface Message<T> {
   readonly headers: Readonly<Record<string, unknown>>
   /** From the `x-published-at` header (ms precision); absent for messages from foreign producers. */
   readonly publishedAt?: Date
+  /** From the `x-expires-at` header ({@link PublishOptions.ttlMs}); absent when the message has no deadline. A handler only ever sees a message whose deadline had not passed when it was delivered. */
+  readonly expiresAt?: Date
   /** AMQP `appId` — the `name` of the publishing client, if any. */
   readonly appId?: string
   /** Aborted when `timeoutMs` elapses or the close drain deadline passes — pass it to fetch/db calls. */
@@ -281,7 +285,7 @@ export interface QueueHandle<T> {
   /** Passive inspection (no topology changes). */
   inspect(options?: OpsOptions): Promise<QueueStats>
 
-  /** Move messages from `<name>.dead` back to the main queue (attempt reset, `messageId` kept), up to `limit` (default: all present at call time). */
+  /** Move messages from `<name>.dead` back to the main queue (attempt reset, `messageId` kept), up to `limit` (default: all present at call time). The `x-expires-at` deadline is kept: a message replayed after it is dropped on arrival (`coney.message_expired`). */
   replayDead(
     options?: OpsOptions & { readonly limit?: number },
   ): Promise<{ readonly replayed: number }>
@@ -390,6 +394,7 @@ export type ConeyLogEvent =
   | { event: 'coney.subscription_error'; level: 'error'; topic: string; messageId: string; reason: string }
   | { event: 'coney.message_retried'; level: 'warn'; queue: string; messageId: string; attempt: number; delayMs: number; reason: string }
   | { event: 'coney.message_dead'; level: 'error'; queue: string; messageId: string; attempt: number; reason: string }
+  | { event: 'coney.message_expired'; level: 'warn'; queue: string; messageId: string; attempt: number; expiresAt: string }
   | { event: 'coney.handler_timeout'; level: 'warn'; queue: string; messageId: string; timeoutMs: number }
   | { event: 'coney.handler_late'; level: 'warn'; queue: string; messageId: string; outcome: 'resolved' | 'rejected' }
   | { event: 'coney.ack_failed'; level: 'warn'; queue: string; messageId: string; reason: string }
@@ -413,6 +418,8 @@ export type DeliveryOutcome =
   | { readonly outcome: 'dead'; readonly reason: string; readonly error?: unknown }
   /** Subscriptions only: the handler threw and the message was dropped. */
   | { readonly outcome: 'dropped'; readonly error: unknown }
+  /** The message's deadline had passed: acked without calling the handler. */
+  | { readonly outcome: 'expired' }
 
 export interface DeliverOptions {
   /** Simulated attempt number. Default `1`. */
@@ -420,9 +427,11 @@ export interface DeliverOptions {
   readonly messageId?: string
   readonly headers?: Readonly<Record<string, HeaderValue>>
   readonly redelivered?: boolean
+  /** Simulated `x-expires-at` deadline ({@link PublishOptions.ttlMs}); in the past → `{ outcome: 'expired' }`. Default: none. */
+  readonly expiresAt?: Date
 }
 
-/** In-memory {@link Coney}: `publish` records, `consume`/`subscribe` register, {@link ConeyMock.deliver} runs the real consumer pipeline (schema gate, ladder, `timeoutMs`). `close()` mirrors the real lifecycle: state `'closed'`, registrations deactivated, gated operations reject with {@link ConeyClosedError}. */
+/** In-memory {@link Coney}: `publish` records, `consume`/`subscribe` register, {@link ConeyMock.deliver} runs the real consumer pipeline (expiry gate, schema gate, ladder, `timeoutMs`). `close()` mirrors the real lifecycle: state `'closed'`, registrations deactivated, gated operations reject with {@link ConeyClosedError}. */
 export interface ConeyMock extends Coney {
   /** Every publish since creation or the last {@link ConeyMock.reset}, in order. */
   readonly published: readonly PublishedRecord[]

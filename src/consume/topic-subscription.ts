@@ -133,6 +133,16 @@ export class TopicSubscription<T> extends BaseConsumer {
     } finally {
       this.controllers.delete(controller)
     }
+    if (outcome.kind === 'expired') {
+      this.emit({
+        event: 'coney.message_expired',
+        level: 'warn',
+        queue: this.queueName ?? '',
+        messageId: context.id,
+        attempt: context.attempt,
+        expiresAt: outcome.expiresAt.toISOString(),
+      })
+    }
     if (outcome.kind === 'drop') {
       this.emit({
         event: 'coney.subscription_error',
@@ -142,7 +152,7 @@ export class TopicSubscription<T> extends BaseConsumer {
         reason: outcome.reason,
       })
     }
-    // Both ack and drop acknowledge — subscriptions never requeue or retry.
+    // Ack, drop and expired all acknowledge — subscriptions never requeue or retry.
     this.ack(channel, raw)
   }
 

@@ -336,7 +336,7 @@ class ConeyClient implements Coney {
       validateDurationMs(args.options.timeoutMs, 'timeoutMs')
     const body = parseBody(args.def, args.body)
     // Encoding is pure — do it before any waiting so config errors (reserved
-    // headers, non-JSON bodies) fail fast. `timestamp`/`x-published-at` therefore
+    // headers, non-JSON bodies, an invalid ttlMs) fail fast. `timestamp`/`x-published-at` therefore
     // record when publish() was CALLED, which only differs from wire time while a
     // disconnect wait is in progress.
     const encoded = encodeMessage({

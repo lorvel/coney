@@ -23,6 +23,7 @@ import {
 import { DEFAULT_RETRY, effectiveDelays } from '../defs/retry.js'
 import { validateDurationMs } from '../core/time.js'
 import {
+  deadlineOf,
   encodeMessage,
   stringifyBody,
   validateRoutingKey,
@@ -449,21 +450,33 @@ class ConeyMockClient implements ConeyMock {
     if (!Number.isInteger(attempt) || attempt < 1) {
       throw new ConeyConfigError('attempt must be an integer >= 1')
     }
+    const expiresAtOption = args.options?.expiresAt
+    if (
+      expiresAtOption !== undefined &&
+      !(expiresAtOption instanceof Date && !Number.isNaN(expiresAtOption.getTime()))
+    ) {
+      throw new ConeyConfigError('expiresAt must be a valid Date')
+    }
     // Round-trip through JSON so the handler sees WIRE data (a Date arrives as a
     // string, undefined fields disappear) — the class of bug the mock must catch.
     const wireBody: unknown = JSON.parse(stringifyBody(args.body))
     const now = new Date()
+    const headers: Record<string, unknown> = {
+      ...args.options?.headers,
+      ...(attempt > 1 ? { 'x-retries': attempt - 1 } : {}),
+      'x-published-at': now.toISOString(),
+      ...(expiresAtOption !== undefined ? { 'x-expires-at': expiresAtOption.toISOString() } : {}),
+    }
+    // Read the deadline back from the headers exactly as a broker delivery does.
+    const expiresAt = deadlineOf(headers)
     const context: DeliveryContext = {
       id: args.options?.messageId ?? randomUUID(),
       attempt,
       redelivered: args.options?.redelivered ?? false,
       routingKey: args.routingKey,
-      headers: {
-        ...args.options?.headers,
-        ...(attempt > 1 ? { 'x-retries': attempt - 1 } : {}),
-        'x-published-at': now.toISOString(),
-      },
+      headers,
       publishedAt: now,
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
       ...(this.name !== undefined ? { appId: this.name } : {}),
     }
     const outcome = await runConsumePipeline({
@@ -506,6 +519,8 @@ function toDeliveryOutcome(outcome: PipelineOutcome): DeliveryOutcome {
       })
     case 'drop':
       return Object.freeze({ outcome: 'dropped', error: outcome.error })
+    case 'expired':
+      return Object.freeze({ outcome: 'expired' })
   }
 }
 

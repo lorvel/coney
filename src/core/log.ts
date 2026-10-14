@@ -58,6 +58,15 @@ export type ConeyLogEvent =
       reason: string
     }
   | {
+      event: 'coney.message_expired'
+      level: 'warn'
+      queue: string
+      messageId: string
+      attempt: number
+      /** ISO-8601 — the `x-expires-at` deadline that had passed. */
+      expiresAt: string
+    }
+  | {
       event: 'coney.handler_timeout'
       level: 'warn'
       queue: string

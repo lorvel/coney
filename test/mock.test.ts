@@ -336,6 +336,66 @@ describe('mock deliverTopic: subscriptions and bound queues, in registration ord
   })
 })
 
+describe('mock expiry gate (DeliverOptions.expiresAt)', () => {
+  it('a passed deadline expires on deliver and deliverTopic without calling any handler', async () => {
+    const mock = createConeyMock()
+    const events = defineTopic({ name: 'events' })
+    const jobs = defineQueue({ name: 'jobs', bindings: [{ topic: events, patterns: ['#'] }] })
+    let calls = 0
+    await mock.queue(jobs).consume(() => {
+      calls += 1
+    })
+    await mock.topic(events).subscribe(['#'], () => {
+      calls += 1
+    })
+    const past = new Date(Date.now() - 1)
+    assert.deepEqual(await mock.deliver(jobs, {}, { expiresAt: past }), { outcome: 'expired' })
+    assert.deepEqual(await mock.deliverTopic(events, 'task.updated', {}, { expiresAt: past }), [
+      { outcome: 'expired' },
+      { outcome: 'expired' },
+    ])
+    assert.equal(calls, 0)
+  })
+
+  it('a future deadline is delivered and shows up as message.expiresAt and the header', async () => {
+    const mock = createConeyMock()
+    const jobs = defineQueue({ name: 'jobs' })
+    const future = new Date(Date.now() + 60_000)
+    let seen: { expiresAt: Date | undefined; header: unknown } = {
+      expiresAt: undefined,
+      header: undefined,
+    }
+    await mock.queue(jobs).consume((message) => {
+      seen = { expiresAt: message.expiresAt, header: message.headers['x-expires-at'] }
+    })
+    assert.deepEqual(await mock.deliver(jobs, {}, { expiresAt: future }), { outcome: 'ack' })
+    assert.equal(seen.expiresAt?.getTime(), future.getTime())
+    assert.equal(seen.header, future.toISOString())
+  })
+
+  it('reads the deadline from the headers like a broker delivery: a malformed one is ignored', async () => {
+    const mock = createConeyMock()
+    const jobs = defineQueue({ name: 'jobs' })
+    let calls = 0
+    await mock.queue(jobs).consume(() => {
+      calls += 1
+    })
+    const outcome = await mock.deliver(jobs, {}, { headers: { 'x-expires-at': '0' } })
+    assert.deepEqual(outcome, { outcome: 'ack' })
+    assert.equal(calls, 1)
+  })
+
+  it('rejects an expiresAt that is not a valid Date, and a bad ttlMs on publish', async () => {
+    const mock = createConeyMock()
+    const jobs = defineQueue({ name: 'jobs' })
+    await mock.queue(jobs).consume(() => {})
+    await assert.rejects(mock.deliver(jobs, {}, { expiresAt: new Date('nope') }), ConeyConfigError)
+    await assert.rejects(mock.queue(jobs).publish({}, { ttlMs: 0 }), ConeyConfigError)
+    await mock.queue(jobs).publish({}, { ttlMs: 1_000 })
+    assert.deepEqual(mock.published.at(-1)?.options, { ttlMs: 1_000 })
+  })
+})
+
 describe('mock fidelity: the drift the double exists to prevent', () => {
   it('records the body as it reaches the WIRE, matching what deliver hands a handler', async () => {
     const mock = createConeyMock()

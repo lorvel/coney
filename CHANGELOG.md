@@ -9,6 +9,34 @@ The 0.x entries below are the private `@lorvel/coney` releases the rewrite went
 through before going public; in that line a MINOR bump could contain breaking
 changes (called out in its entry).
 
+## [Unreleased]
+
+### Added
+
+- **Per-message TTL: `PublishOptions.ttlMs`.** Publishing with `ttlMs` stamps an
+  absolute deadline as the `x-expires-at` header (`x-published-at` + `ttlMs`).
+  Retries never extend it. Each delivery is checked once, before the handler,
+  against the consumer's clock: a delivery past its deadline is acked without
+  calling the handler and logged as the new `coney.message_expired` event (`warn`).
+  It is not retried and not dead-lettered. A handler that starts in time and fails
+  late follows the usual retry/dead outcome; a retry then meets the check on its next
+  delivery. `replayDead()` keeps the deadline, so a dead letter replayed after it is
+  dropped on arrival. The deadline keeps a stale message away from the handler; it
+  does not remove it from the queue sooner. Publishes without `ttlMs` are unchanged.
+- `Message.expiresAt`, read from `x-expires-at`.
+- Test double: `DeliverOptions.expiresAt` simulates a deadline, and
+  `{ outcome: 'expired' }` is the new `DeliveryOutcome`.
+
+### Notes for upgrading
+
+- `ConeyLogEvent` and `DeliveryOutcome` each gained a member. Code that switches
+  over either one exhaustively (with a `never` check) needs a case for it. These
+  unions can grow in minor releases.
+- A 3.1.0 consumer honours `x-expires-at` from any producer, but only in the exact
+  form `Date#toISOString()` writes; any other value means no deadline. A 3.0.0
+  consumer ignores the header, so in a mixed fleet only upgraded consumers drop
+  expired messages.
+
 ## [3.0.0] - 2026-10-13
 
 First public release of the ground-up rewrite, published to npm as `coney`. It

@@ -139,6 +139,100 @@ describe('the consume pipeline outcome table (spec §4)', () => {
   })
 })
 
+describe('the expiry gate (PublishOptions.ttlMs, spec §4)', () => {
+  const runAt = (
+    expiresAt: Date | undefined,
+    args: {
+      delays?: readonly number[] | null
+      body?: unknown
+      schema?: { parse(input: unknown): unknown }
+      attempt?: number
+    } = {},
+  ) => {
+    let calls = 0
+    let seen: Date | undefined
+    const outcome = runConsumePipeline({
+      schema: args.schema,
+      body: args.body ?? { ok: true },
+      context: { ...context(args.attempt ?? 1), ...(expiresAt !== undefined ? { expiresAt } : {}) },
+      handler: (message) => {
+        calls += 1
+        seen = message.expiresAt
+      },
+      controller: new AbortController(),
+      timeoutMs: undefined,
+      delays: args.delays === undefined ? [100, 200] : args.delays,
+    })
+    return outcome.then((result) => ({ result, calls, seen }))
+  }
+
+  it('a passed deadline expires the message without calling the handler', async () => {
+    const past = new Date(Date.now() - 1)
+    const { result, calls } = await runAt(past)
+    assert.deepEqual(result, { kind: 'expired', expiresAt: past })
+    assert.equal(calls, 0)
+  })
+
+  it('expires in subscription mode too, and on a later attempt (retries never extend it)', async () => {
+    const past = new Date(Date.now() - 1)
+    assert.equal((await runAt(past, { delays: null })).result.kind, 'expired')
+    assert.equal((await runAt(past, { attempt: 3 })).result.kind, 'expired')
+  })
+
+  it('runs before the schema gate: an expired message never reaches .dead', async () => {
+    const schema = {
+      parse: () => {
+        throw new Error('bad body')
+      },
+    }
+    const { result, calls } = await runAt(new Date(Date.now() - 1), { schema })
+    assert.equal(result.kind, 'expired')
+    assert.equal(calls, 0)
+  })
+
+  it('a future deadline runs the handler, which sees it as message.expiresAt', async () => {
+    const future = new Date(Date.now() + 60_000)
+    const { result, calls, seen } = await runAt(future)
+    assert.deepEqual(result, { kind: 'ack' })
+    assert.equal(calls, 1)
+    assert.equal(seen?.getTime(), future.getTime())
+  })
+
+  it('the deadline itself is already expired (now >= expiresAt), one ms before is not', async (t) => {
+    const now = 1_760_000_000_000
+    t.mock.method(Date, 'now', () => now)
+    assert.equal((await runAt(new Date(now))).result.kind, 'expired')
+    const justBefore = await runAt(new Date(now + 1))
+    assert.equal(justBefore.result.kind, 'ack')
+    assert.equal(justBefore.calls, 1)
+  })
+
+  it('the gate decides whether a delivery STARTS: a late failure follows the outcome table', async () => {
+    const lateFailure = (delays: readonly number[]) =>
+      runConsumePipeline({
+        schema: undefined,
+        body: {},
+        context: { ...context(1), expiresAt: new Date(Date.now() + 20) },
+        handler: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 60))
+          throw new Error('failed after the deadline')
+        },
+        controller: new AbortController(),
+        timeoutMs: undefined,
+        delays,
+      })
+    assert.equal((await lateFailure([100])).kind, 'retry') // the next delivery meets the gate
+    assert.equal((await lateFailure([])).kind, 'dead') // keeps its failure reason
+  })
+
+  it('no deadline means no gate', async () => {
+    const { result, calls, seen } = await runAt(undefined)
+    assert.deepEqual(result, { kind: 'ack' })
+    assert.equal(calls, 1)
+    assert.equal(seen, undefined)
+  })
+})
+
 describe('handler timeout (fail now, log the late result)', () => {
   it('fails the delivery at the deadline, aborts the signal, reports the late settlement', async () => {
     const timeouts: number[] = []
@@ -239,6 +333,37 @@ describe('reason truncation and delivery context', () => {
     )
     assert.equal(garbage.attempt, 1)
     assert.equal(garbage.publishedAt, undefined)
+  })
+
+  it('contextOf honours x-expires-at only in the exact toISOString form', () => {
+    const raw = (headers: Record<string, unknown>) =>
+      ({
+        fields: { routingKey: 'k', redelivered: false },
+        properties: { headers },
+        content: Buffer.from('{}'),
+      }) as never
+    const ours = contextOf(raw({ 'x-expires-at': '2026-10-14T00:00:01.500Z' }))
+    assert.equal(ours.expiresAt?.toISOString(), '2026-10-14T00:00:01.500Z')
+    assert.equal(contextOf(raw({})).expiresAt, undefined)
+    // new Date() alone would read '0' and 'Oct 14' as dates in 2000/2001 and zone-less
+    // or offset forms in other zones — a foreign value must never become a deadline.
+    for (const value of [
+      'soon',
+      '0',
+      '1',
+      'Oct 14',
+      '2026-10-14T00:00:01Z',
+      '2026-10-14T00:00:01.500',
+      '2026-10-14T07:00:01.500+07:00',
+      '2026-13-01T00:00:00.000Z',
+      '2026-02-31T00:00:00.000Z', // V8 would roll it over into March
+      '2026-10-14T24:00:00.000Z', // ...and this into the next day
+      1_700_000_000_000,
+    ]) {
+      assert.equal(contextOf(raw({ 'x-expires-at': value })).expiresAt, undefined, String(value))
+    }
+    // x-published-at keeps its 3.0.0 reading (lenient): only the new header is strict.
+    assert.ok(contextOf(raw({ 'x-published-at': 'Oct 14' })).publishedAt instanceof Date)
   })
 
   it('republishOptions whitelists properties and drops userId/expiration', () => {
